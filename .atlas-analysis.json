@@ -1,0 +1,179 @@
+{
+  "projectType": "saas",
+  "projectName": "EtherReaper",
+  "projectDescription": "A web-based Active Directory penetration testing framework that consolidates network reconnaissance, credential capture, AD attacks, and vulnerability checks into a single browser-based interface backed by FastAPI and SQLite.",
+  "theme": "aspen",
+  "primaryColor": "#00B4D8",
+  "lightColor": "#90E0EF",
+  "darkColor": "#03045E",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/credential-flow",
+              "concepts/kerberos-auth",
+              "concepts/scan-output"
+            ]
+          },
+          {
+            "group": "Network Reconnaissance",
+            "pages": [
+              "recon/nmap",
+              "recon/masscan",
+              "recon/nuclei",
+              "recon/web-screenshots",
+              "recon/smb-signing"
+            ]
+          },
+          {
+            "group": "Layer 2 Attacks",
+            "pages": [
+              "layer2/responder",
+              "layer2/mitm6",
+              "layer2/asrepcatcher"
+            ]
+          },
+          {
+            "group": "Vulnerability Checks",
+            "pages": [
+              "vulns/overview",
+              "vulns/coerce",
+              "vulns/zerologon",
+              "vulns/printnightmare",
+              "vulns/masterBaiter"
+            ]
+          },
+          {
+            "group": "Active Directory",
+            "pages": [
+              "ad/user-enumeration",
+              "ad/unauthenticated",
+              "ad/authenticated",
+              "ad/adcs",
+              "ad/bloodhound"
+            ]
+          },
+          {
+            "group": "Data Management",
+            "pages": [
+              "data/credentials",
+              "data/hosts",
+              "data/scope",
+              "data/scan-history",
+              "data/domain-info"
+            ]
+          },
+          {
+            "group": "Troubleshooting",
+            "pages": [
+              "troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview"
+            ]
+          },
+          {
+            "group": "Network Info",
+            "pages": [
+              "api/network-info"
+            ]
+          },
+          {
+            "group": "Scans",
+            "pages": [
+              "api/scans-nmap",
+              "api/scans-masscan",
+              "api/scans-nuclei"
+            ]
+          },
+          {
+            "group": "Credentials",
+            "pages": [
+              "api/credentials"
+            ]
+          },
+          {
+            "group": "Active Directory",
+            "pages": [
+              "api/ad-attacks"
+            ]
+          },
+          {
+            "group": "Layer 2",
+            "pages": [
+              "api/layer2"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Browser-based interface for Active Directory penetration testing — no CLI juggling required",
+    "Persistent SQLite credential store with deduplication and auto-population of authenticated scan dropdowns",
+    "Playwright-powered web screenshots with technology detection, value scoring, and VPN-transparent rendering",
+    "Layer 2 attack tools (Responder, mitm6, ASRepCatcher) with live output streaming and start/stop controls",
+    "Full AD attack chain: BloodHound, Kerberoast, AS-REP Roasting, ADCS (ESC1–ESC8+), GMSA, Pre2K, Delegation, and more",
+    "Vulnerability checks: PrintNightmare, SMBGhost, EternalBlue, noPAC, Zerologon, Coerce, MasterBaiter payloads",
+    "Kerberos ccache support with automatic clock sync and ccache-based authenticated scans",
+    "Hash Calculator: derive NTLM, AES-128, and AES-256 Kerberos keys from plaintext passwords using impacket"
+  ],
+  "publicApiSurface": [
+    "POST /api/network-info/update",
+    "POST /api/network-info/detect-auth",
+    "POST /api/kerberos/acquire-tgt",
+    "POST /api/scans/nmap",
+    "POST /api/scans/masscan",
+    "POST /api/network/nuclei/scan",
+    "POST /api/responder/start",
+    "POST /api/responder/stop",
+    "POST /api/mitm6/start",
+    "POST /api/mitm6/stop",
+    "POST /api/asrepcatcher/start",
+    "POST /api/bloodhound/run",
+    "POST /api/kerberoast/run",
+    "POST /api/asreproast/run",
+    "POST /api/adcs/run",
+    "POST /api/adcs/esc1/run",
+    "POST /api/shares/run",
+    "POST /api/coerce/run",
+    "POST /api/zerologon/run",
+    "POST /api/vulns/run",
+    "POST /api/users/rid-brute",
+    "POST /api/users/export",
+    "POST /api/groups/export",
+    "POST /api/passwords/extract",
+    "GET /api/credentials",
+    "POST /api/credentials/add",
+    "DELETE /api/credentials/{cred_id}",
+    "GET /api/hosts",
+    "GET /api/scope",
+    "POST /api/scope/import",
+    "GET /api/scans",
+    "GET /api/scan-status/{scan_id}",
+    "GET /api/domain-info",
+    "GET /api/users",
+    "GET /api/groups"
+  ]
+}
