@@ -1,0 +1,95 @@
+---
+title: Masscan
+description: High-speed host and port discovery across large IP ranges using raw packet scanning.
+---
+
+Masscan performs initial host and port discovery across your entire scope at speeds that nmap cannot match. It transmits raw SYN packets without the TCP/IP stack, reaching scan rates of tens of thousands of packets per second. Use it to identify which hosts have open ports before running a slower, more detailed nmap scan.
+
+## Navigate to the scanner
+
+Open **NETWORK → Masscan** in the sidebar.
+
+## Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Target | — | IP, CIDR, or comma-separated IPs |
+| Port preset | custom | Port range to scan (see below) |
+| Ports | `1-65535` | Used when preset is `custom` |
+| Rate | `10000` | Packets per second |
+| Randomize hosts | `true` | Shuffle host order (`--randomize-hosts`) |
+| Open only | `true` | Suppress closed/filtered (`--open-only`) |
+
+### Port presets
+
+| Preset | Masscan flag |
+|--------|--------------|
+| Top 100 | `--top-ports 100` |
+| Top 1000 | `--top-ports 1000` |
+| Custom | `-p <ports>` (uses the Ports field) |
+
+## Sudo requirement
+
+Masscan requires raw socket access and must run as root. EtherReaper will display the sudo modal when you click **Start Scan**. Enter your sudo password once; it is passed to the subprocess via `stdin` and never stored in shell history.
+
+## Running a scan
+
+<Steps>
+  <Step title="Enter target">
+    Specify a CIDR range (e.g. `10.10.10.0/24`), single IP, or comma-separated list. Large lists are written to a temp file and passed with `-iL`.
+  </Step>
+  <Step title="Set rate">
+    The default rate of `10000` pps is safe for most lab environments. Lower it if you are concerned about triggering IDS alerts or saturating a slow link.
+  </Step>
+  <Step title="Choose port preset or enter custom ports">
+    For a full-scope sweep, use Top 1000 or set custom ports to `1-65535` (slow — adjust rate accordingly).
+  </Step>
+  <Step title="Enter sudo password">
+    Complete the sudo modal to launch the scan.
+  </Step>
+  <Step title="Review results in Scan History and Hosts">
+    Masscan writes discovered open ports to the hosts database as the scan completes.
+  </Step>
+</Steps>
+
+## Output file
+
+Masscan results are saved as XML:
+
+```
+recon/masscan_<YYYYMMDD_HHMMSS>.xml
+```
+
+Ownership is fixed back to the operator user after the scan completes.
+
+## How results populate the database
+
+After masscan exits, EtherReaper parses the XML and for each host with open ports:
+
+- Inserts or replaces a row in the `hosts` table with the IP and comma-separated open port list.
+- Inserts rows into `scan_results` for each open port (port, protocol, state).
+- Updates the matching `scope` entry status to `scanned`.
+
+<Note>
+Masscan does not perform service detection — the `services` column in `hosts` will be empty after a masscan-only run. Follow up with an nmap scan to populate service names and versions.
+</Note>
+
+## Recommended workflow
+
+Masscan and nmap complement each other. The typical sequence for a new engagement:
+
+<Steps>
+  <Step title="Masscan — full port discovery">
+    Run masscan against your full scope with Top 1000 or a custom wide port range. This quickly identifies which hosts are alive and what ports are open.
+  </Step>
+  <Step title="Nmap — service detection">
+    Run nmap with the Default or Thorough preset against the hosts masscan found. Nmap merges its results (ports, services, versions, OS) into the same hosts table rows that masscan populated.
+  </Step>
+  <Step title="Web Screenshots — fingerprint web services">
+    Use the **Web Applications** database filter in the Web Screenshots tool to automatically target hosts with confirmed open web ports.
+  </Step>
+</Steps>
+
+<Warning>
+Very high scan rates (100k+ pps) can destabilize network equipment and are detectable by most IDS/IPS systems. In authorized assessments, discuss acceptable rates with the client before scanning.
+</Warning>

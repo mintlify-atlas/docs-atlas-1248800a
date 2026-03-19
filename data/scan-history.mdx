@@ -1,0 +1,157 @@
+---
+title: 'Scan History'
+description: 'Every tool execution is automatically logged with type, target, status, timestamps, and an output file link. View, filter, and clean up past scans from a single page.'
+---
+
+The Scan History page provides a persistent record of every tool run. Scans are written to the database automatically when they start and updated when they complete or fail. Output file links are clickable in the UI so you can review raw tool output without leaving the browser.
+
+## Database schema
+
+Scan records are stored in the `scans` table in `data/reaper.db`.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | TEXT | UUID primary key, generated at scan start |
+| `scan_type` | TEXT | Tool or operation name (see scan types below) |
+| `target` | TEXT | Target IP, hostname, domain, or description |
+| `status` | TEXT | `running`, `completed`, `failed`, `killed`, or `orphaned` |
+| `output_file` | TEXT | Path to the raw output file in `recon/` |
+| `created_at` | TIMESTAMP | When the scan started |
+| `completed_at` | TIMESTAMP | When the scan finished (null while running) |
+
+## How scans are recorded
+
+Two mechanisms write to the `scans` table:
+
+**Direct insert** — Long-running background scans (Nmap, Masscan, BloodHound, Responder, etc.) insert a row with `status = 'running'` at startup and update it on completion or failure.
+
+**`write_to_history()`** — A helper function used by scans that complete synchronously or in a subprocess. It inserts a single row with the final status in one call.
+
+```python
+write_to_history(scan_type, target, status, output_file=None)
+```
+
+## Startup cleanup
+
+On every application start, `cleanup_orphaned_scans()` runs and marks any scan still in `status = 'running'` as `orphaned`. This prevents stale "running" entries from appearing after an unexpected shutdown or restart.
+
+```python
+def cleanup_orphaned_scans():
+    cursor.execute("""
+        UPDATE scans
+        SET status = 'orphaned', completed_at = ?
+        WHERE status = 'running'
+    """, (datetime.now(),))
+```
+
+## API endpoints
+
+### List all scans
+
+```http
+GET /api/scans
+```
+
+Returns all scan records ordered by `created_at` descending.
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "scans": [
+    {
+      "id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+      "scan_type": "nmap",
+      "target": "10.10.10.0/24",
+      "status": "completed",
+      "output_file": "recon/nmap_windows_20240115_123456",
+      "created_at": "2024-01-15 12:34:56",
+      "completed_at": "2024-01-15 12:36:12"
+    }
+  ]
+}
+```
+
+### Check individual scan status
+
+```http
+GET /api/scan-status/{scan_id}
+```
+
+Returns only the `status` field for a single scan ID. Used by the frontend to poll for completion without fetching the full scans list.
+
+**Response**
+
+```json
+{ "status": "completed" }
+```
+
+Returns `{ "status": "not_found" }` if the scan ID does not exist.
+
+### Bulk delete scans
+
+```http
+POST /api/scans/bulk-delete
+```
+
+**Request body**
+
+```json
+{ "ids": ["uuid-1", "uuid-2"] }
+```
+
+Deletes selected scan records from the database. Does not delete the corresponding output files.
+
+### Kill a running scan
+
+```http
+POST /api/scans/kill
+```
+
+**Request body**
+
+```json
+{ "scan_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479" }
+```
+
+Attempts to terminate the underlying process using `pkill` matched against the scan type and target string. Updates `status` to `killed` on success.
+
+<Note>
+The kill endpoint uses `pkill -f` to match processes by command string. For scans like Responder and mitm6 that are managed by their own stop endpoints, use those dedicated controls instead.
+</Note>
+
+## Scan types
+
+The following `scan_type` values appear in scan history:
+
+| Scan type | Tool | Source |
+|---|---|---|
+| `nmap` | Nmap | NETWORK → Nmap |
+| `masscan` | Masscan | NETWORK → Masscan |
+| `nuclei` | Nuclei | NETWORK → Nuclei |
+| `bloodhound` | netexec BloodHound | AD AUTH → BloodHound |
+| `kerberoast` | netexec Kerberoast | AD AUTH → Kerberoast |
+| `asreproast` | netexec AsRepRoast | AD AUTH → AsRepRoast |
+| `adcs` | Certipy | AD AUTH → ADCS |
+| `domain-info` | netexec LDAP | DATA → Domain Info |
+| `responder` | Responder | LAYER2 → Responder |
+| `mitm6` | mitm6 | LAYER2 → mitm6 |
+| `asrepcatcher` | ASRepCatcher | LAYER2 → ASRepCatcher |
+| `RID Brute` | netexec SMB | USERS → RID Brute |
+| `User Export` | netexec LDAP/SMB | USERS → Users Export |
+| `Local Groups` | netexec SMB | USERS → Local Groups |
+| `Password Extract` | netexec | USERS → Password Recon |
+| `ldapnomnom` | ldapnomnom | USERS → ldapnomnom |
+| `SMB Signing` | netexec SMB | NETWORK → SMB Signing |
+| `coerce` | netexec | VULNS → Coerce |
+
+## Output files
+
+The `output_file` column stores the path to the raw output in the `recon/` directory. In the UI, this is rendered as a clickable link that opens the file content in a modal viewer.
+
+Output file naming follows the pattern `recon/{scan_type}_{preset}_{timestamp}` where applicable. Nmap scans write both a `.txt` and `.xml` file via `-oA`.
+
+<Tip>
+Use bulk delete to clean up old scan records periodically. The output files in `recon/` are not deleted by this operation and must be removed manually if storage is a concern.
+</Tip>

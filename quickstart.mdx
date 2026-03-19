@@ -1,80 +1,120 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Start EtherReaper, configure your session, add targets, and run your first scan.
 ---
 
-## Get started in three steps
+## Starting the Application
 
-Get your documentation site running locally and make your first customization.
+From the project directory, run as your regular user:
 
-### Step 1: Set up your local environment
+```bash
+./run.sh
+```
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+`run.sh` checks for the venv and then launches the app:
 
-### Step 2: Deploy your changes
+```bash
+exec ./venv/bin/python etherreaper.py "$@"
+```
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+Once running, open your browser at:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+```
+http://localhost:8000
+```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+<Warning>
+Do **not** run `./run.sh` with `sudo`. The app runs as your regular user by design. When specific tools require elevation (nmap with `-O`, masscan, Responder, mitm6, ASRepCatcher), a sudo password modal will prompt you in the browser.
+</Warning>
 
-### Step 3: Go live
+## CLI Flags
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+All flags are passed through to the underlying uvicorn server:
 
-## Next steps
+```bash
+./run.sh --reload       # Auto-reload on code changes (development mode)
+./run.sh --port 9000    # Start on a custom port instead of 8000
+./run.sh --workers 4    # Production multi-worker mode
+./run.sh --help         # Show all available options
+```
 
-Now that you have your docs running, explore these key features:
+<Info>
+Use `--reload` during development to pick up changes to `etherreaper.py` automatically. Avoid `--reload` in production as it uses more resources and disables multi-worker mode.
+</Info>
 
-<CardGroup cols={2}>
+## First Session Setup
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+<Steps>
+  <Step title="Open EtherReaper in your browser">
+    Navigate to `http://localhost:8000`. You will see the EtherReaper interface with a **Network Info** bar across the top and a sidebar with all tool categories.
+  </Step>
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+  <Step title="Fill in the Network Info bar">
+    The Network Info bar is the session-wide configuration used by every scan. Fill in all four fields before running any tools:
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+    | Field | Value | Example |
+    |-------|-------|---------|
+    | **Your IP** | Your tun0 or eth0 IP (listener IP for coerce/relay attacks) | `10.10.14.5` |
+    | **Domain** | Target AD domain name | `corp.local` |
+    | **DC Hostname** | Domain controller hostname (required for Kerberos/ccache) | `DC01` |
+    | **DC IP** | Domain controller IP address | `10.10.10.100` |
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+    <Tip>
+    For Kerberos ccache authentication, all authenticated scans must use the DC **hostname**, not the IP. Set DC Hostname correctly before switching Auth Method to Kerberos.
+    </Tip>
+  </Step>
 
-</CardGroup>
+  <Step title="Add targets to Scope">
+    Go to **DATA → Scope** and add your target IP addresses, CIDR ranges, or IP ranges. Scope targets are used as the default target list for discovery scans.
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+    Accepted formats:
+    - Single IP: `10.10.10.100`
+    - CIDR range: `10.10.10.0/24`
+    - IP range: `10.10.10.1-10.10.10.254`
+  </Step>
+
+  <Step title="Run an Nmap scan to populate the hosts database">
+    Go to **NETWORK → Nmap** and run a scan against your scope. Nmap results are parsed and stored in the SQLite hosts database — this populates the host list used by all downstream scans.
+
+    ```
+    NETWORK → Nmap → select scope targets → Start Scan
+    ```
+
+    After the scan completes, discovered hosts with their open ports, services, OS, and SMB metadata are viewable under **DATA → Hosts**.
+  </Step>
+</Steps>
+
+## Credential Flow
+
+EtherReaper maintains a persistent credentials database across sessions. Credentials are captured automatically from:
+
+- **Responder** — NTLM hashes from LLMNR/NBT-NS/mDNS poisoning
+- **netexec** — cleartext passwords, NTLM hashes via SMB/LDAP/LSA
+- **Kerberoast / AS-REP roast** — TGS and AS-REP hashes
+- **ESC1 attack** — NTLM hash obtained via the automated Certipy ESC1 chain
+
+All captured credentials appear in **DATA → Credentials**, filterable by source (`netexec(SMB)`, `netexec(LDAP)`, `netexec(LSA)`, `manual`). Every authenticated scan modal has a **Saved Credentials** dropdown that pulls from this database — no copy-pasting between tools.
+
+## Sudo Password Modal
+
+Some tools require root privileges to function. When you launch one of these tools, EtherReaper will display a sudo password modal in the browser before starting the scan:
+
+| Tool | Reason |
+|------|---------|
+| `nmap -O` | OS fingerprinting requires raw packet access |
+| `masscan` | Requires raw socket access |
+| `Responder` | Binds to layer 2 interfaces |
+| `mitm6` | IPv6 poisoning requires raw packet injection |
+| `ASRepCatcher` | Kerberos packet capture requires raw socket access |
+
+Enter your password once and optionally save it for the remainder of the session. The app itself continues to run as your regular user — only these specific tool invocations are elevated via sudo.
+
+## Next Steps
+
+With hosts in the database and your Network Info configured, you have access to all tool categories:
+
+- **NETWORK → Web Screenshots** — fingerprint web applications on discovered hosts
+- **LAYER2 → Responder** — start LLMNR/NBT-NS poisoning to capture hashes
+- **VULNERABILITIES → Coerce** — force authentication from targets to your listener IP
+- **AD → Kerberoast** / **AS-REP Roast** — extract hashes for offline cracking
+- **AD → ADCS** — enumerate certificate services misconfigurations (ESC1–ESC8+)

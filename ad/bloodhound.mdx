@@ -1,0 +1,124 @@
+---
+title: 'BloodHound'
+description: 'Collect AD relationship data via netexec and import into BloodHound CE or Neo4j for attack path analysis.'
+---
+
+BloodHound maps the Active Directory environment as a graph of relationships — who can do what to whom. EtherReaper collects the raw data using netexec's BloodHound collection module and saves the output as a zip archive ready for import.
+
+## Running a collection
+
+**Endpoint:** `POST /api/bloodhound/run`
+
+**Under the hood:** Runs `netexec ldap <dc_ip> -u <user> -p <pass> -d <domain> --bloodhound --collection All --dns-server <dc_ip>`. For ccache authentication, targets the domain name instead of the IP and sets `KRB5CCNAME`.
+
+**Request body:**
+
+```json
+{
+  "username": "jdoe",
+  "password": "Password123",
+  "domain": "corp.local",
+  "use_kerberos": false,
+  "use_kcache": false
+}
+```
+
+| Field | Description |
+|---|---|
+| `username` | Domain account for collection |
+| `password` | Password or NTLM hash |
+| `domain` | Target domain (auto-filled from Network Info) |
+| `use_kerberos` | Pass `-k` to netexec; syncs clock with DC first |
+| `use_kcache` | Use a ccache file from `recon/ccache/` |
+| `ccache_file` | ccache filename (required when `use_kcache` is `true`) |
+| `sudo_password` | Required when using Kerberos for clock sync |
+
+DC hostname and IP are always sourced from Network Info — they are not settable per-request.
+
+<Info>
+The collection uses `--collection All`, which gathers all available data categories in a single run. This is the recommended mode for comprehensive attack path analysis.
+</Info>
+
+## Output
+
+Netexec writes BloodHound output to the current working directory as a timestamped zip archive. EtherReaper saves this to:
+
+```
+recon/bloodhound_<domain>_<timestamp>.zip
+```
+
+The zip contains JSON files for each collection category.
+
+## What BloodHound data contains
+
+| Category | Description |
+|---|---|
+| Users | Domain user accounts with properties and group membership |
+| Groups | Security groups and their members |
+| Computers | Domain-joined machines with session and local admin data |
+| Sessions | Who is logged in where (current sessions) |
+| ACLs | Access control relationships between objects |
+| GPOs | Group Policy Objects and their links |
+| OUs | Organizational unit structure and hierarchy |
+| Domains | Domain objects and trust relationships |
+| Trusts | Cross-domain and cross-forest trust configurations |
+
+## Importing into BloodHound
+
+<Steps>
+  <Step title="Download the collection zip">
+    Use `GET /api/download-package` to download a full EtherReaper data package, or retrieve the BloodHound zip directly from `recon/`.
+  </Step>
+  <Step title="Open BloodHound CE">
+    Navigate to your BloodHound CE instance (default: `http://localhost:8080` if running locally) and log in.
+  </Step>
+  <Step title="Upload the zip">
+    Go to **Administration → File Ingest** and upload the `bloodhound_*.zip` file. BloodHound processes the JSON files and populates the Neo4j graph database.
+  </Step>
+  <Step title="Run queries">
+    Use the built-in analysis queries (e.g. **Find Shortest Paths to Domain Admins**) or the Cypher query interface to explore attack paths.
+  </Step>
+</Steps>
+
+<Note>
+BloodHound CE requires its own Neo4j instance. If you are running a legacy BloodHound (4.x) with a standalone Neo4j database, import via the **Upload Data** button in the BloodHound GUI instead.
+</Note>
+
+## Downloading output
+
+**Endpoint:** `GET /api/download-package`
+
+Downloads a zip archive of the entire `data/` and `recon/` directories — including the BloodHound collection zip, all scan output files, and the SQLite database. Use this for offline analysis or to transfer results to a reporting system.
+
+## Authentication notes
+
+<AccordionGroup>
+  <Accordion title="NTLM credentials">
+    Standard username and password. If the password field contains an NTLM hash (`LM:NT` or `:<NT>`), EtherReaper automatically passes `-H` instead of `-p`.
+  </Accordion>
+  <Accordion title="Kerberos (-k)">
+    Appends `-k` to the netexec command. Clock sync with the DC is performed automatically before the scan using `ntpdate` (requires sudo password).
+  </Accordion>
+  <Accordion title="Kerberos ccache">
+    Sets `KRB5CCNAME` to the selected ccache path, parses the username and domain from the ccache file, syncs time, and runs `netexec ldap <domain> -u <user> --use-kcache --bloodhound ...` targeting the domain name rather than the DC IP.
+  </Accordion>
+</AccordionGroup>
+
+## Typical workflow
+
+BloodHound collection is most useful once you have an initial foothold. A typical sequence:
+
+<Steps>
+  <Step title="Obtain credentials">
+    Use Responder, ASRepCatcher, or a Kerberoast/AS-REP Roast hit to obtain valid domain credentials or a ccache.
+  </Step>
+  <Step title="Run BloodHound collection">
+    Submit `POST /api/bloodhound/run` with your credentials. The collection takes 30–120 seconds depending on domain size.
+  </Step>
+  <Step title="Import and analyze">
+    Import the zip into BloodHound CE. Run **Shortest Paths to Domain Admins** to identify privilege escalation paths.
+  </Step>
+  <Step title="Act on findings">
+    Use paths involving delegation, ADCS misconfiguration, or ACL abuse to escalate. Run the relevant EtherReaper modules (Delegation, ADCS, Kerberoast) to execute.
+  </Step>
+</Steps>

@@ -1,0 +1,210 @@
+---
+title: 'User enumeration'
+description: 'Enumerate domain users, groups, and credentials from SMB and LDAP without or with low-privilege access.'
+---
+
+The user enumeration tools collect domain accounts and groups from multiple angles — RID cycling, LDAP queries, and background username brute-forcing — and consolidate results into the `domain_users` and `domain_groups` tables.
+
+<Info>
+All results are deduplicated by username + domain. Running multiple sources against the same domain merges data rather than creating duplicate rows.
+</Info>
+
+## RID brute
+
+Enumerate domain user accounts by cycling Security Identifier (SID) RIDs over SMB. This is an unauthenticated-friendly technique — it requires only a valid username and password to bind to the SMB session, not domain admin privileges.
+
+**Endpoint:** `POST /api/users/rid-brute`
+
+**Under the hood:** Runs `netexec smb <target> -u <user> -p <pass> --rid-brute`. Discovered users and groups are parsed from the output and inserted into the database via `insert_or_update_user` and `insert_or_update_group` with source `RID Brute`.
+
+**Request body:**
+
+```json
+{
+  "target": "192.168.1.10",
+  "username": "guest",
+  "password": ""
+}
+```
+
+**Response:** Returns immediately with a `scan_id` and `output_file` path. The scan runs as a background task with a 300-second timeout. Check `DATA → Scan History` for completion status.
+
+**Output file:** `recon/ridbrute_<timestamp>.txt`
+
+<Note>
+RID brute runs asynchronously. The response `status: success` means the task was started, not completed. The scan history entry transitions from `running` to `completed` when finished.
+</Note>
+
+## Users export
+
+Export the full domain user list using netexec's `--users` flag. Returns username, last password set date, bad password count, and description for each account.
+
+**Endpoint:** `POST /api/users/export`
+
+**Under the hood:** Runs `netexec smb <target> -u <user> -p <pass> --users`. Output is saved to `recon/nxc-users.txt` and parsed into `domain_users` with source `LDAP`.
+
+**Request body:**
+
+```json
+{
+  "target": "192.168.1.10",
+  "username": "jdoe",
+  "password": "Password123"
+}
+```
+
+**Fields stored per user:** `username`, `domain`, `last_pw_set`, `badpw_count`, `description`.
+
+**Output file:** `recon/nxc-users.txt`
+
+## Local groups
+
+Enumerate local group membership on a target host via SMB.
+
+**Endpoint:** `POST /api/groups/export`
+
+**Under the hood:** Runs `netexec smb <target> -u <user> -p <pass> --local-groups`. Results are parsed with `parse_netexec_users_groups` and stored in `domain_groups` with source `Local Groups`.
+
+**Request body:**
+
+```json
+{
+  "target": "192.168.1.10",
+  "username": "jdoe",
+  "password": "Password123"
+}
+```
+
+**Output file:** `recon/groups.txt`
+
+## ldapnomnom
+
+Background LDAP username brute-forcing using the [ldapnomnom](https://github.com/lkarlslund/ldapnomnom) tool. The scan runs a two-step process:
+
+<Steps>
+  <Step title="DC discovery">
+    Runs `ldapnomnom --dump --dnsdomain <domain>` to discover all domain controllers and saves them to `recon/rootDSEs.json`.
+  </Step>
+  <Step title="Username brute-force">
+    Runs the fast bruteforce against all discovered DCs with your chosen wordlist and concurrency settings. Valid usernames are written to `recon/ldapnomnom.txt` and imported into `domain_users` with source `ldapnomnom`.
+  </Step>
+</Steps>
+
+**Start scan:** `POST /api/users/ldapnomnom`
+
+**Request body:**
+
+```json
+{
+  "domain": "corp.local",
+  "wordlist": "/usr/share/seclists/Usernames/xato-net-10-million-usernames.txt",
+  "maxservers": 32,
+  "parallel": 16
+}
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `domain` | Auto-detected from network info | Target domain DNS name |
+| `wordlist` | `/usr/share/seclists/Usernames/xato-net-10-million-usernames.txt` | Path to username wordlist |
+| `maxservers` | `32` | Maximum number of DC connections |
+| `parallel` | `16` | Number of parallel requests per server |
+
+**Check status:** `GET /api/users/ldapnomnom/status/{task_id}`
+
+Use the `task_id` returned from the start request to poll for completion. Possible status values: `running`, `completed`, `timeout`, `error`.
+
+```json
+{
+  "status": "completed",
+  "message": "ldapnomnom completed: 142 valid users found",
+  "user_count": 142
+}
+```
+
+<Warning>
+ldapnomnom has a maximum runtime of 1 hour. If it times out, the scan history entry is marked `failed` and the task status returns `timeout`.
+</Warning>
+
+### Wordlist upload
+
+Upload a custom wordlist to use with ldapnomnom.
+
+**Endpoint:** `POST /api/users/ldapnomnom/upload-wordlist`
+
+Send the file as `multipart/form-data` with the field name `wordlist_file`. The file is saved to `wordlists/<filename>` and the full path is returned for use in the start request.
+
+## Password recon
+
+A four-module sweep for credentials stored insecurely in LDAP attributes or SYSVOL Group Policy Preferences (GPP).
+
+**Endpoint:** `POST /api/passwords/extract`
+
+**Request body:**
+
+```json
+{
+  "target": "192.168.1.10",
+  "username": "jdoe",
+  "password": "Password123",
+  "modules": ["userPassword", "unixUserPassword", "gpp", "gpp_autologin"]
+}
+```
+
+Select any combination of the four modules:
+
+<AccordionGroup>
+  <Accordion title="userPassword — Cleartext LDAP passwords">
+    Runs `netexec ldap -M get-userPassword`. Searches for accounts with the `userPassword` attribute set in LDAP, which can contain cleartext credentials.
+  </Accordion>
+  <Accordion title="unixUserPassword — Unix LDAP passwords">
+    Runs `netexec ldap -M get-unixUserPassword`. Searches for the `unixUserPassword` attribute, commonly set on accounts configured for Unix/Linux authentication.
+  </Accordion>
+  <Accordion title="gpp — GPP passwords from SYSVOL">
+    Runs `netexec smb --share=SYSVOL -M gpp_password`. Searches Group Policy Preference XML files for credentials stored with the well-known AES key, which Microsoft published.
+  </Accordion>
+  <Accordion title="gpp_autologin — GPP auto-login credentials">
+    Runs `netexec smb --share=SYSVOL -M gpp_autologin`. Searches GPP XML files for auto-logon passwords configured via Group Policy.
+  </Accordion>
+</AccordionGroup>
+
+LDAP modules (`userPassword` and `unixUserPassword`) are combined into a single netexec command when both are selected. GPP modules run as separate SMB commands. All output is appended to `recon/nxc-passwords.txt`.
+
+**Output file:** `recon/nxc-passwords.txt`
+
+## Export and data management
+
+| Endpoint | Description |
+|---|---|
+| `GET /api/users/export-txt` | Writes `recon/users.txt` with one username per line; returns the file path |
+| `GET /api/groups/export-txt` | Writes `recon/groups.txt` with one group name per line; returns the file path |
+| `GET /api/users` | Returns all users from `domain_users` table |
+| `GET /api/groups` | Returns all groups from `domain_groups` table |
+| `POST /api/users/bulk-delete` | Bulk delete users by `{username, domain}` pairs |
+| `POST /api/groups/bulk-delete` | Bulk delete groups by `{group_name, domain}` pairs |
+
+## Database schema
+
+**`domain_users` table:**
+
+| Column | Description |
+|---|---|
+| `username` | Account name |
+| `domain` | Domain or `UNKNOWN` if not resolved |
+| `rid` | Relative Identifier (from RID brute) |
+| `source` | Discovery source: `RID Brute`, `LDAP`, `ldapnomnom` |
+| `enabled` | Account enabled status (when available) |
+| `last_pw_set` | Last password set timestamp |
+| `badpw_count` | Bad password attempt count |
+| `description` | Account description field |
+| `discovered_at` | Timestamp of first discovery |
+
+**`domain_groups` table:**
+
+| Column | Description |
+|---|---|
+| `group_name` | Group name |
+| `domain` | Domain or `LOCAL` for local groups |
+| `rid` | Relative Identifier |
+| `source` | Discovery source: `RID Brute`, `Local Groups` |
+| `discovered_at` | Timestamp of first discovery |

@@ -1,0 +1,290 @@
+---
+title: 'Architecture'
+description: 'How EtherReaper is structured: the single-file FastAPI backend, SQLite database schema, static assets, and background process management.'
+---
+
+EtherReaper is intentionally lean. The entire backend lives in one Python file, the database is a local SQLite file, and the frontend is plain HTML + JavaScript. There are no containers, no message queues, and no external services required.
+
+## Backend
+
+All server-side logic lives in `etherreaper.py`. It is a standard FastAPI application launched via `uvicorn` through `run.sh`. The entry point registers a lifespan context manager that runs four startup routines before accepting requests:
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()                 # Create or migrate all SQLite tables
+    seed_snippets()           # Import built-in command snippets from data/commands.json
+    init_network_info()       # Auto-detect and persist local IP, domain, DC details
+    cleanup_orphaned_scans()  # Mark any "running" scans from a prior session as orphaned
+    yield
+```
+
+The application is served at `http://localhost:8000` by default.
+
+## Static files and templates
+
+The frontend is three files mounted directly by FastAPI:
+
+| Path | Role |
+|------|------|
+| `templates/index.html` | All HTML markup, modals, and page structure |
+| `static/js/app.js` | All frontend JavaScript — routing, API calls, UI logic |
+| `static/css/style.css` | Styles |
+
+The root route (`GET /`) reads `templates/index.html` and returns it as an `HTMLResponse`. Static assets are served from the `/static` mount.
+
+## Directory structure
+
+```
+etherreaper/
+├── etherreaper.py         # Entire FastAPI backend (single file)
+├── setup.sh               # Installer (run as root once)
+├── run.sh                 # Start app (run as regular user)
+├── templates/
+│   └── index.html         # All HTML + modals
+├── static/
+│   ├── js/app.js          # All frontend JavaScript
+│   └── css/style.css      # Styles
+├── data/
+│   └── reaper.db          # SQLite database
+├── recon/                 # All tool output files
+│   ├── screenshots/       # Web screenshot PNGs
+│   ├── ccache/            # Kerberos ccache files
+│   ├── loads/             # MasterBaiter generated payloads
+│   └── *.txt / *.json     # Timestamped scan output
+├── wordlists/             # Custom wordlists
+├── ASRepCatcher/          # ASRepCatcher install
+└── venv/                  # Python virtual environment
+```
+
+The `recon/`, `data/`, and `wordlists/` directories are created by `setup.sh`. The subdirectories `recon/screenshots/`, `recon/ccache/`, and `recon/loads/` are created at runtime if they do not already exist.
+
+## Database
+
+All persistent state is stored in `data/reaper.db`. The schema is created and migrated by `init_db()` on every startup. New columns are added with `ALTER TABLE ... ADD COLUMN` guarded by `try/except` to handle existing databases without errors.
+
+### Tables
+
+<AccordionGroup>
+  <Accordion title="network_info">
+    Stores the operator's local environment configuration. There is always exactly one row (`id = 1`).
+
+    ```sql
+    CREATE TABLE network_info (
+        id               INTEGER PRIMARY KEY,
+        host             TEXT,       -- local hostname
+        ip               TEXT,       -- local IP
+        domain           TEXT,       -- AD domain (e.g. CORP.LOCAL)
+        dc_host          TEXT,       -- DC hostname
+        dc_ip            TEXT,       -- DC IP address
+        ext_ip           TEXT,       -- external/public IP
+        auth_method      TEXT,       -- detected: Kerberos, NTLM, Kerberos+NTLM
+        requires_kerberos INTEGER DEFAULT 0,
+        ccache_path      TEXT,       -- path to active ccache file
+        last_updated     TIMESTAMP
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="scans">
+    Every tool execution is logged here regardless of outcome.
+
+    ```sql
+    CREATE TABLE scans (
+        id           TEXT PRIMARY KEY,  -- UUID
+        scan_type    TEXT,
+        target       TEXT,
+        status       TEXT,              -- running | completed | failed | orphaned
+        output_file  TEXT,
+        created_at   TIMESTAMP,
+        completed_at TIMESTAMP
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="hosts">
+    Discovered network hosts, populated by Nmap and netexec scans.
+
+    ```sql
+    CREATE TABLE hosts (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        ip           TEXT UNIQUE,
+        hostname     TEXT,
+        domain       TEXT,
+        os_info      TEXT,
+        mac_address  TEXT,
+        mac_vendor   TEXT,
+        signing      TEXT,
+        smbv1        TEXT,
+        ports        TEXT,    -- comma-separated open ports
+        services     TEXT,
+        discovered_at TIMESTAMP
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="credentials">
+    All captured credentials from every source.
+
+    ```sql
+    CREATE TABLE credentials (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        username     TEXT,
+        password     TEXT DEFAULT '',
+        hash         TEXT DEFAULT '',
+        domain       TEXT DEFAULT '',
+        source       TEXT DEFAULT 'manual',
+        discovered_at TIMESTAMP,
+        hostname     TEXT,
+        ip           TEXT
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="domain_users and domain_groups">
+    Domain accounts and groups collected via RID brute, Users Export, and netexec.
+
+    ```sql
+    CREATE TABLE domain_users (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        username     TEXT,
+        domain       TEXT,
+        rid          TEXT,
+        source       TEXT,
+        enabled      INTEGER DEFAULT NULL,
+        last_pw_set  TEXT,
+        badpw_count  INTEGER DEFAULT 0,
+        description  TEXT,
+        discovered_at TIMESTAMP,
+        UNIQUE(username, domain)
+    )
+
+    CREATE TABLE domain_groups (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_name   TEXT,
+        domain       TEXT,
+        rid          TEXT,
+        source       TEXT,
+        discovered_at TIMESTAMP,
+        UNIQUE(group_name, domain)
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="scope">
+    Target IP addresses, CIDRs, and ranges added by the operator.
+
+    ```sql
+    CREATE TABLE scope (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        ip        TEXT UNIQUE,
+        cidr      TEXT,
+        ip_range  TEXT,
+        status    TEXT DEFAULT 'pending',
+        notes     TEXT,
+        added_at  TIMESTAMP,
+        scanned_at TIMESTAMP
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="adcs_vulns">
+    Certificate Services vulnerabilities discovered by Certipy.
+
+    ```sql
+    CREATE TABLE adcs_vulns (
+        id               INTEGER PRIMARY KEY,
+        scan_id          TEXT,
+        target           TEXT,
+        esc_id           TEXT,
+        vuln_object      TEXT,
+        object_type      TEXT,
+        vulnerable       INTEGER DEFAULT 1,
+        enabled          INTEGER DEFAULT 0,
+        enrollment_rights TEXT,
+        details          TEXT,
+        manager_approval INTEGER DEFAULT 0,
+        remarks          TEXT,
+        created_at       TIMESTAMP
+    )
+    ```
+  </Accordion>
+
+  <Accordion title="sccm_info and related tables">
+    SCCM/MECM infrastructure data. Three tables cover site info, site servers, management points, and generic objects.
+
+    ```sql
+    CREATE TABLE sccm_info (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        domain          TEXT,
+        container       TEXT,
+        site_name       TEXT,
+        site_code       TEXT,
+        assignment_code TEXT,
+        cas             TEXT,
+        discovered_at   TIMESTAMP,
+        UNIQUE(domain, site_code)
+    )
+    ```
+
+    Additional tables: `sccm_site_servers`, `sccm_management_points`, `sccm_objects`.
+  </Accordion>
+
+  <Accordion title="Other tables">
+    - `domain_info` — DC enumeration results: DC host/IP, MAQ, domain SID
+    - `domain_trusts` — Trust relationships between domains
+    - `delegation` — Kerberos delegation findings (unconstrained, constrained, RBCD)
+    - `password_policy` — Domain password policy attributes
+    - `scan_results` — Per-port scan results linked to scope entries
+    - `shell_history` — Audit log of all commands run in the built-in shell
+    - `snippets` — Built-in and user command library seeded from `data/commands.json`
+  </Accordion>
+</AccordionGroup>
+
+## Background process tracking
+
+Three tools run as long-lived background processes with start/stop controls. Each is tracked in a module-level Python dictionary keyed by an identifier (typically a scan ID or interface name):
+
+```python
+RESPONDER_PROCESSES    = {}  # LLMNR/NBT-NS/mDNS poisoner
+MITM6_PROCESSES        = {}  # IPv6 DHCPv6 spoofer
+ASREPCATCHER_PROCESSES = {}  # AS-REP relay and listener
+```
+
+Additional global dicts track SecretsDump scans (`SECRETSDUMP_SCANS`), live PTY shell sessions (`SHELL_SESSIONS`), and file server tools (`HTTP_SERVER_PROC`, `SMB_SERVER_PROC`, `LISTENER_PROC`).
+
+When the app restarts, any process registered in these dicts is gone. The `cleanup_orphaned_scans()` startup function handles this by setting all `status = 'running'` scan rows to `status = 'orphaned'`.
+
+<Note>
+The actual status set on restart is `'orphaned'`, not `'failed'`. This distinguishes app-restart interruptions from tool execution failures.
+</Note>
+
+## Output file naming
+
+All tool output is written to the `recon/` directory with a timestamp embedded in the filename:
+
+```
+nmap_20240315_143022.txt
+kerberoast_20240315_143510.txt
+bloodhound_20240315_150012.zip
+```
+
+The timestamp format is `%Y%m%d_%H%M%S`, generated at the moment the scan is launched. The full path is stored in the `scans.output_file` column so the Scan History page can link directly to each file.
+
+## CORS configuration
+
+The app registers `CORSMiddleware` with open origins to allow the browser frontend to call the API without cross-origin restrictions:
+
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+<Warning>
+The wildcard CORS policy is intentional for a local-only pentest tool. Do not expose the app on a public interface.
+</Warning>

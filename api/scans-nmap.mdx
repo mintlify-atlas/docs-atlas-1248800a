@@ -1,0 +1,347 @@
+---
+title: "Scans — Nmap & Masscan"
+description: "API endpoints for launching Nmap and Masscan scans, managing scan history, killing running processes, and importing Nmap XML results into the hosts database."
+---
+
+All scan operations are asynchronous. Launching a scan returns a `scan_id` immediately; use `GET /api/scan-status/{scan_id}` to poll completion. Completed scans are stored in the SQLite `scans` table and viewable in the Scan History page.
+
+---
+
+## POST /api/scans/nmap
+
+Launches an Nmap scan against a target. Requires a sudo password because Nmap uses `sudo` for OS detection and raw socket access. Results are automatically parsed from the generated `.xml` file and stored in the `hosts` and `scan_results` tables.
+
+```bash
+curl -X POST http://localhost:8000/api/scans/nmap \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "10.10.10.0/24",
+    "preset": "default",
+    "portPreset": "windows",
+    "sudo_password": "kali"
+  }'
+```
+
+### Request Body
+
+<ParamField body="target" type="string" required>
+  Scan target. Accepts:
+  - Single IP: `10.10.10.1`
+  - CIDR range: `10.10.10.0/24`
+  - Dash range: `10.10.10.1-254`
+  - Hostname: `dc01.corp.local`
+  - Comma-separated IPs (written to file automatically if list is long)
+</ParamField>
+
+<ParamField body="preset" type="string">
+  Nmap scan type preset. Defaults to `"default"`.
+
+  | Value | Nmap flags |
+  |-------|------------|
+  | `quick` | `-T4 -F` |
+  | `default` | `-T3 -sV` |
+  | `thorough` | `-T3 -sV -sC` |
+  | `aggressive` | `-T4 -sV -sC` |
+  | `custom` | Uses `custom_params` value |
+</ParamField>
+
+<ParamField body="portPreset" type="string">
+  Port selection preset. Defaults to `"custom"` (full range or custom).
+
+  | Value | Ports |
+  |-------|-------|
+  | `common` | `80,443,445,3389,22` |
+  | `windows` | `88,135,139,389,445,464,636,3268,3269,3389,5985,5986,9389` |
+  | `web` | `80,8080,8081,8082,443,8443,8444,9443,10443,9090,10000,50660,4743,9582` |
+  | `infra` | `22,2375,2376,2325,5985,5986,6443,7001,8001,8443,9000,9200,27017,6379,1433,3306,5432,5900` |
+  | `all` | `1-1000` |
+  | `custom` | Uses `ports` field or no port restriction |
+</ParamField>
+
+<ParamField body="custom_params" type="string">
+  Custom Nmap flags used when `preset` is `"custom"` (e.g. `-T4 -sV -sC -p 1-65535`).
+</ParamField>
+
+<ParamField body="sudo_password" type="string" required>
+  Sudo password. Passed to `sudo -S` via stdin; never logged or written to disk.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` when the scan process was launched.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  UUID identifying the scan record. Use with `/api/scan-status/{scan_id}`.
+</ResponseField>
+
+<ResponseField name="command" type="string">
+  The Nmap command that was executed (password redacted).
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "status": "success",
+  "scan_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "command": "sudo nmap -T3 -sV -p 88,135,139,389,445,3389,5985,5986 --open 10.10.10.0/24 -oA recon/nmap_windows_20240115_143200"
+}
+```
+
+---
+
+## POST /api/scans/masscan
+
+Launches a Masscan scan for fast host and port discovery. Masscan requires root; `sudo_password` is mandatory. Results are parsed from the Masscan XML output and populated into the `hosts` table.
+
+```bash
+curl -X POST http://localhost:8000/api/scans/masscan \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "10.10.10.0/24",
+    "portPreset": "top1000",
+    "rate": 10000,
+    "sudo_password": "kali"
+  }'
+```
+
+### Request Body
+
+<ParamField body="target" type="string" required>
+  Scan target. Accepts the same formats as the Nmap endpoint: single IP, CIDR, range, or comma-separated list.
+</ParamField>
+
+<ParamField body="portPreset" type="string">
+  Port selection preset.
+
+  | Value | Masscan flag |
+  |-------|-------------|
+  | `top100` | `--top-ports 100` |
+  | `top1000` | `--top-ports 1000` |
+  | `custom` | Uses the `ports` field |
+</ParamField>
+
+<ParamField body="ports" type="string">
+  Explicit port specification used when `portPreset` is `"custom"` (e.g. `"1-65535"` or `"80,443,8080"`).
+</ParamField>
+
+<ParamField body="rate" type="integer">
+  Packets per second. Defaults to `10000`. Higher values increase speed but risk dropped packets on slow links.
+</ParamField>
+
+<ParamField body="randomize" type="boolean">
+  Randomize host scan order (`--randomize-hosts`). Defaults to `true`.
+</ParamField>
+
+<ParamField body="openOnly" type="boolean">
+  Only report open ports (`--open-only`). Defaults to `true`.
+</ParamField>
+
+<ParamField body="sudo_password" type="string" required>
+  Sudo password. Masscan requires root access.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` when the scan was launched.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  UUID for polling status.
+</ResponseField>
+
+<ResponseField name="command" type="string">
+  The Masscan command executed (password redacted).
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "status": "success",
+  "scan_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+  "command": "sudo masscan 10.10.10.0/24 --top-ports 1000 --rate 10000 -oX recon/masscan_20240115_143200.xml --randomize-hosts --open-only"
+}
+```
+
+---
+
+## GET /api/scans
+
+Returns all scan records ordered by creation time (newest first).
+
+```bash
+curl http://localhost:8000/api/scans
+```
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on success.
+</ResponseField>
+
+<ResponseField name="scans" type="array">
+  Array of scan record objects.
+
+  <Expandable title="Scan record object">
+    <ResponseField name="id" type="string">
+      Scan UUID.
+    </ResponseField>
+    <ResponseField name="scan_type" type="string">
+      Type of scan (e.g. `nmap`, `masscan`, `bloodhound`, `nuclei`).
+    </ResponseField>
+    <ResponseField name="target" type="string">
+      Scan target.
+    </ResponseField>
+    <ResponseField name="status" type="string">
+      Current status: `running`, `completed`, `failed`, `killed`, `error`.
+    </ResponseField>
+    <ResponseField name="output_file" type="string">
+      Path to output file in `recon/`.
+    </ResponseField>
+    <ResponseField name="created_at" type="string">
+      ISO 8601 timestamp when the scan was created.
+    </ResponseField>
+    <ResponseField name="completed_at" type="string">
+      ISO 8601 timestamp when the scan finished, or `null` if still running.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## GET /api/scan-status/{scan_id}
+
+Polls the status of a specific scan by its UUID. Designed for lightweight polling loops.
+
+```bash
+curl http://localhost:8000/api/scan-status/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+### Path Parameter
+
+<ParamField path="scan_id" type="string" required>
+  The UUID returned by the scan launch endpoint.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  Current scan status: `running`, `completed`, `failed`, `killed`, `error`, or `not_found`.
+</ResponseField>
+
+**Example responses:**
+
+```json
+{ "status": "running" }
+```
+```json
+{ "status": "completed" }
+```
+
+---
+
+## POST /api/scans/kill
+
+Terminates a running scan process by sending `SIGTERM` (via `pkill`) to the matching process. Updates the scan record status to `killed`.
+
+```bash
+curl -X POST http://localhost:8000/api/scans/kill \
+  -H "Content-Type: application/json" \
+  -d '{"scan_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"}'
+```
+
+### Request Body
+
+<ParamField body="scan_id" type="string" required>
+  UUID of the scan to terminate.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` when the kill signal was sent.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Confirmation message including the scan ID.
+</ResponseField>
+
+---
+
+## POST /api/scans/bulk-delete
+
+Deletes multiple scan records from the database by their IDs.
+
+```bash
+curl -X POST http://localhost:8000/api/scans/bulk-delete \
+  -H "Content-Type: application/json" \
+  -d '{"ids": ["uuid-1", "uuid-2", "uuid-3"]}'
+```
+
+### Request Body
+
+<ParamField body="ids" type="array" required>
+  Array of scan UUIDs (strings) to delete.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on success.
+</ResponseField>
+
+<ResponseField name="deleted" type="integer">
+  Number of records deleted.
+</ResponseField>
+
+---
+
+## POST /api/hosts/import-xml
+
+Imports a previously saved Nmap XML file and populates the `hosts` and `scan_results` tables. Accepts a `multipart/form-data` file upload. This is useful for importing results from scans run outside EtherReaper.
+
+```bash
+curl -X POST http://localhost:8000/api/hosts/import-xml \
+  -F "xml_file=@/path/to/nmap_scan.xml"
+```
+
+### Request
+
+The request must be `multipart/form-data`.
+
+<ParamField body="xml_file" type="file" required>
+  An Nmap XML output file (`.xml`). Generated with `-oX` or `-oA` flags.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on success.
+</ResponseField>
+
+<ResponseField name="hosts_added" type="integer">
+  Number of new host records created.
+</ResponseField>
+
+<ResponseField name="ports_added" type="integer">
+  Number of open port/service records inserted.
+</ResponseField>
+
+<ResponseField name="duplicates_skipped" type="integer">
+  Number of existing records left unchanged (deduplication).
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "status": "success",
+  "hosts_added": 12,
+  "ports_added": 47,
+  "duplicates_skipped": 3
+}
+```

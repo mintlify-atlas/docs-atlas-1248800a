@@ -1,0 +1,141 @@
+---
+title: 'Scan output'
+description: 'How EtherReaper records scan history, names output files, handles scan status transitions, and recovers from app restarts.'
+---
+
+Every tool execution in EtherReaper is tracked in the SQLite database and produces a timestamped output file in `recon/`. This makes all results available after the fact, even across app restarts.
+
+## Scan history table
+
+The `scans` table records every tool execution:
+
+```sql
+CREATE TABLE scans (
+    id           TEXT PRIMARY KEY,  -- UUID generated at launch time
+    scan_type    TEXT,              -- tool name (e.g. "nmap", "kerberoast")
+    target       TEXT,              -- IP, hostname, or CIDR
+    status       TEXT,              -- running | completed | failed | orphaned
+    output_file  TEXT,              -- absolute path to output file in recon/
+    created_at   TIMESTAMP,
+    completed_at TIMESTAMP
+)
+```
+
+## Scan statuses
+
+| Status | Meaning |
+|--------|---------|
+| `running` | Tool process is actively executing |
+| `completed` | Tool finished with a successful exit code |
+| `failed` | Tool exited with an error or the scan was explicitly killed |
+| `orphaned` | Scan was `running` when the app last restarted (process no longer exists) |
+
+<Note>
+Orphaned scans are distinct from failed scans. A scan is marked `orphaned` when the app restarts with a `running` entry in the database — indicating the previous server process was interrupted, not that the tool itself failed.
+</Note>
+
+## `write_to_history()` helper
+
+Every scan module calls `write_to_history()` immediately at launch to create the database record:
+
+```python
+def write_to_history(scan_type: str, target: str, status: str, output_file: str = None):
+    scan_id = str(uuid.uuid4())
+    cursor.execute("""
+        INSERT INTO scans (id, scan_type, target, status, output_file, created_at, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        scan_id,
+        scan_type,
+        target,
+        status,
+        output_file,
+        datetime.now(),
+        datetime.now() if status == 'completed' else None  # completed_at only set if already done
+    ))
+    return scan_id
+```
+
+The returned `scan_id` UUID is used by the scan endpoint to update the record as the tool runs.
+
+## `update_scan_status()` helper
+
+Called when a tool process exits, this function sets the final status and records the completion timestamp:
+
+```python
+def update_scan_status(scan_id, status, message=None):
+    cursor.execute("""
+        UPDATE scans SET status = ?, completed_at = ?
+        WHERE id = ?
+    """, (status, datetime.now(), scan_id))
+```
+
+The `message` parameter is accepted for API compatibility but is not persisted (there is no message column in the schema).
+
+## Startup recovery: `cleanup_orphaned_scans()`
+
+On every app startup, before any requests are accepted, `cleanup_orphaned_scans()` runs as part of the lifespan sequence:
+
+```python
+def cleanup_orphaned_scans():
+    cursor.execute("""
+        UPDATE scans
+        SET status = 'orphaned', completed_at = ?
+        WHERE status = 'running'
+    """, (datetime.now(),))
+
+    orphaned_count = cursor.rowcount
+    if orphaned_count > 0:
+        print(f"Marked {orphaned_count} orphaned scan(s) from previous session")
+```
+
+This prevents the Scan History page from showing stale `running` entries for processes that no longer exist.
+
+## Output file patterns
+
+All output is written to the `recon/` directory. Filenames always include a `%Y%m%d_%H%M%S` timestamp to avoid collisions between multiple runs of the same tool.
+
+| Pattern | Contents |
+|---------|----------|
+| `nmap_*.txt` / `nmap_*.xml` | Nmap scan results (text and XML formats) |
+| `masscan_*.txt` | Masscan host/port discovery output |
+| `nuclei_*.txt` | Nuclei vulnerability scan results |
+| `bloodhound_*.zip` | BloodHound AD collection archive |
+| `kerberoast_*.txt` | Kerberoastable TGS hashes (`$krb5tgs$...`) |
+| `asreproast_*.txt` | AS-REP hashes (`$krb5asrep$...`) |
+| `adcs_*.txt` | Certipy ADCS enumeration output |
+| `responder_*.txt` | Responder session log |
+| `mitm6_*.txt` | mitm6 session log |
+| `asrepcatcher_*.txt` | ASRepCatcher session log |
+| `webscreenshot_*.json` | Screenshot scan results with tech tags and value scores |
+| `screenshots/*.png` | Individual web screenshot images |
+| `recon/ccache/*.ccache` | Kerberos ccache files (TGTs) |
+| `recon/loads/*.lnk` | MasterBaiter LNK payload files |
+| `recon/loads/*.library-ms` | MasterBaiter Library-MS payload files |
+| `recon/loads/*.scf` | MasterBaiter SCF payload files |
+| `recon/loads/*.zip` | MasterBaiter zip-packaged payload bundles |
+
+## Viewing scan history
+
+The **DATA → Scan History** page lists all records from the `scans` table, sorted by `created_at` descending. Each row shows:
+
+- Scan type and target
+- Status badge (`running`, `completed`, `failed`, `orphaned`)
+- Start and completion timestamps
+- A link to the output file (if one was recorded)
+
+Clicking the output file link opens or downloads the raw tool output directly from the `recon/` directory.
+
+## Killing a running scan
+
+Long-running scans can be stopped from the UI. The frontend sends:
+
+```bash
+POST /api/scans/kill
+```
+
+The endpoint looks up the process in the appropriate global process dictionary (e.g. `RESPONDER_PROCESSES`, `MITM6_PROCESSES`) and sends `SIGTERM`. The scan record is then updated to `status = 'failed'`.
+
+<Tip>
+If the kill button does not stop the underlying process, check the Scan History page to confirm the status was updated. In rare cases a stuck `netexec` process may need to be killed manually from a terminal.
+</Tip>

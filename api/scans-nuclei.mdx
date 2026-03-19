@@ -1,0 +1,273 @@
+---
+title: "Scans — Nuclei & SMB Signing"
+description: "API endpoints for template-based Nuclei vulnerability scans, SMB signing checks, and stopping running scans."
+---
+
+Nuclei scans run in the background without `sudo`. SMB signing checks use NetExec's `--gen-relay-list` to identify hosts suitable for NTLM relay attacks.
+
+---
+
+## POST /api/network/nuclei/scan
+
+Launches a Nuclei scan against web services discovered in the most recent Nmap web-port XML file in `recon/`. The endpoint reads the XML, extracts all open web ports, builds a target URL list (`recon/WebApps.txt`), and starts Nuclei in the background.
+
+The scan requires at least one Nmap XML file with `"web"` in the filename (e.g. `nmap_web_20240115.xml`) to exist in `recon/`.
+
+```bash
+curl -X POST http://localhost:8000/api/network/nuclei/scan \
+  -H "Content-Type: application/json" \
+  -d '{
+    "templates": ["cves", "exposures"],
+    "custom_cmd": "-severity critical,high"
+  }'
+```
+
+### Request Body
+
+<ParamField body="templates" type="array">
+  Array of Nuclei template tag strings to filter by (e.g. `["cves", "exposures", "default-logins"]`). If empty or omitted, all templates are used.
+</ParamField>
+
+<ParamField body="custom_cmd" type="string">
+  Additional raw Nuclei flags appended to the command (e.g. `"-severity critical,high"` or `"-rl 10"`).
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` when the scan was launched.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  UUID for polling with `/api/scan-status/{scan_id}`.
+</ResponseField>
+
+<ResponseField name="webapp_count" type="integer">
+  Number of web application targets extracted from the Nmap XML.
+</ResponseField>
+
+<ResponseField name="templates" type="string | array">
+  The template tags used, or `"all"` if no templates were specified.
+</ResponseField>
+
+<ResponseField name="command" type="string">
+  The Nuclei command that was launched.
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "status": "success",
+  "scan_id": "c3d4e5f6-a7b8-9012-cdef-012345678901",
+  "webapp_count": 8,
+  "templates": ["cves", "exposures"],
+  "command": "nuclei -l recon/WebApps.txt -j -tags cves,exposures -o recon/nuclei_c3d4e5f6.json"
+}
+```
+
+---
+
+## POST /api/network/nuclei/scan-direct
+
+Launches a Nuclei scan against an explicit list of target URLs. Bypasses the Nmap XML lookup — useful when you want to scan specific targets that may not be in the database.
+
+```bash
+curl -X POST http://localhost:8000/api/network/nuclei/scan-direct \
+  -H "Content-Type: application/json" \
+  -d '{
+    "targets": ["http://10.10.10.1:80", "https://10.10.10.1:443"],
+    "templates": ["default-logins"]
+  }'
+```
+
+### Request Body
+
+<ParamField body="targets" type="array" required>
+  Array of target URL strings (e.g. `["http://10.10.10.1:80", "https://10.10.10.1:8443"]`).
+</ParamField>
+
+<ParamField body="templates" type="array">
+  Nuclei template tag filters. If empty, all templates are run.
+</ParamField>
+
+<ParamField body="custom_cmd" type="string">
+  Additional raw Nuclei CLI flags.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` when the scan was launched.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  UUID for polling.
+</ResponseField>
+
+<ResponseField name="target_count" type="integer">
+  Number of targets written to the scan list.
+</ResponseField>
+
+<ResponseField name="templates" type="string | array">
+  Template tags used, or `"all"`.
+</ResponseField>
+
+<ResponseField name="command" type="string">
+  The Nuclei command launched.
+</ResponseField>
+
+---
+
+## POST /api/network/nuclei/stop/{scan_id}
+
+Stops a running Nuclei scan by updating its database status to `stopped`. The underlying process is killed via `pkill`.
+
+```bash
+curl -X POST http://localhost:8000/api/network/nuclei/stop/c3d4e5f6-a7b8-9012-cdef-012345678901
+```
+
+### Path Parameter
+
+<ParamField path="scan_id" type="string" required>
+  UUID of the Nuclei scan to stop.
+</ParamField>
+
+### Response
+
+```json
+{ "status": "stopped" }
+```
+
+---
+
+## GET /api/network/nuclei/xml-files
+
+Lists all Nmap XML files in `recon/` whose name contains `"web"`. These are the files that the `/api/network/nuclei/scan` endpoint uses as scan input. The most recently created file is marked with `"latest": true`.
+
+```bash
+curl http://localhost:8000/api/network/nuclei/xml-files
+```
+
+### Response
+
+<ResponseField name="files" type="array">
+  Array of XML file descriptors, sorted newest first.
+
+  <Expandable title="File object">
+    <ResponseField name="path" type="string">
+      Absolute path to the XML file.
+    </ResponseField>
+    <ResponseField name="name" type="string">
+      Filename only (e.g. `nmap_web_20240115_143200.xml`).
+    </ResponseField>
+    <ResponseField name="latest" type="boolean">
+      `true` for the most recently created file.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "files": [
+    { "path": "/home/kali/etherreaper/recon/nmap_web_20240115_143200.xml", "name": "nmap_web_20240115_143200.xml", "latest": true },
+    { "path": "/home/kali/etherreaper/recon/nmap_web_20240114_091022.xml", "name": "nmap_web_20240114_091022.xml", "latest": false }
+  ]
+}
+```
+
+---
+
+## POST /api/smb-signing/scan
+
+Runs a NetExec SMB signing check against a target using `netexec smb <target> --gen-relay-list`. Hosts with SMB signing **disabled** are written to `recon/smb_relay.txt` and their signing/SMBv1 status is updated in the hosts database. This is a synchronous call — it waits for the scan to complete (up to 5 minutes).
+
+```bash
+curl -X POST http://localhost:8000/api/smb-signing/scan \
+  -H "Content-Type: application/json" \
+  -d '{"target": "10.10.10.0/24"}'
+```
+
+### Request Body
+
+<ParamField body="target" type="string" required>
+  IP, CIDR, or range to check (e.g. `"10.10.10.0/24"`).
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on completion.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Summary including count of vulnerable hosts.
+</ResponseField>
+
+<ResponseField name="vulnerable_count" type="integer">
+  Number of hosts with SMB signing disabled (relay targets).
+</ResponseField>
+
+<ResponseField name="total_hosts" type="integer">
+  Total number of hosts observed during the scan.
+</ResponseField>
+
+<ResponseField name="command" type="string">
+  NetExec command executed.
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "status": "success",
+  "message": "SMB signing scan completed - 3 host(s) without signing",
+  "vulnerable_count": 3,
+  "total_hosts": 12,
+  "command": "netexec smb 10.10.10.0/24 --gen-relay-list smb_relay.txt"
+}
+```
+
+---
+
+## POST /api/smbsigning/run
+
+Alternate SMB signing endpoint that accepts an array of targets. Functionally equivalent to `/api/smb-signing/scan` but designed for use when you have a pre-populated list of IPs (e.g. from the Scope table). When more than one target is provided, they are written to a temporary file and passed to NetExec with `-iL`.
+
+```bash
+curl -X POST http://localhost:8000/api/smbsigning/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "targets": ["10.10.10.1", "10.10.10.2", "10.10.10.3"]
+  }'
+```
+
+### Request Body
+
+<ParamField body="target" type="string">
+  Single target IP, CIDR, or comma-separated list.
+</ParamField>
+
+<ParamField body="targets" type="array">
+  Array of IP strings. Takes precedence over `target` when both are provided.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on completion.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Summary of results.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  UUID of the scan record created.
+</ResponseField>
+
+<ResponseField name="output" type="string">
+  Raw NetExec output.
+</ResponseField>

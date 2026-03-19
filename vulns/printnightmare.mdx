@@ -1,0 +1,156 @@
+---
+title: Vuln Checks
+description: Detection of PrintNightmare, SMBGhost, MS17-010, noPAC, and NTLM Reflection via the VULNERABILITIES → Vuln Checks panel and the /api/vulns/run endpoint.
+---
+
+The **Vuln Checks** panel consolidates five SMB-based vulnerability checks into a single interface. Each check runs via the `netexec smb` module system and records its result in scan history. Navigate to **VULNERABILITIES → Vuln Checks** to use them.
+
+## Supported modules
+
+All five checks share the same `POST /api/vulns/run` endpoint and are differentiated by the `module` field:
+
+| Module key | NetExec module | Credentials required | CVE |
+|---|---|---|---|
+| `printnightmare` | `printnightmare` | No | CVE-2021-1675 |
+| `smbghost` | `smbghost` | No | CVE-2020-1080 |
+| `ms17-010` | `ms17-010` | No | — |
+| `nopac` | `nopac` | Yes | CVE-2021-42287 / 42278 |
+| `ntlm-reflection` | `ntlm_reflection` | Yes | — |
+
+## PrintNightmare (CVE-2021-1675)
+
+PrintNightmare exploits a privilege escalation and remote code execution vulnerability in the Windows Print Spooler service (`spoolsv.exe`). The vulnerability exists in the `RpcAddPrinterDriverEx` RPC call, which allows a low-privileged or unauthenticated caller to load an arbitrary DLL as the SYSTEM account by specifying a remote driver path.
+
+The check probes the target's Print Spooler RPC endpoint to determine whether the service is exposed and exploitable.
+
+**Command built by the backend:**
+
+```bash
+netexec smb <target> -u '' -p '' -M printnightmare
+```
+
+<Note>
+  PrintNightmare does not require credentials for detection. The module attempts a probe with a null session.
+</Note>
+
+## SMBGhost (CVE-2020-1080)
+
+SMBGhost is a pre-authentication remote code execution vulnerability in the SMBv3 compression decompression implementation (`srv2.sys`). A specially crafted `SMB2 NEGOTIATE` packet with a malformed compression transform header triggers a buffer overflow.
+
+Affected versions: Windows 10 1903/1909, Windows Server 1903/1909 (before the March 2020 patch).
+
+**Command built by the backend:**
+
+```bash
+netexec smb <target> -u '' -p '' -M smbghost
+```
+
+## MS17-010 (EternalBlue)
+
+MS17-010 exploits a critical vulnerability in SMBv1's transaction handling. The NSA-developed EternalBlue exploit was leaked by the Shadow Brokers and used in the WannaCry and NotPetya campaigns. It allows unauthenticated remote code execution on unpatched Windows 7, Windows Server 2008 R2, and earlier systems.
+
+**Command built by the backend:**
+
+```bash
+netexec smb <target> -u '' -p '' -M ms17-010
+```
+
+<Warning>
+  MS17-010 detection sends SMBv1 probes. Older or fragile network equipment may exhibit unexpected behaviour when SMBv1 traffic is detected.
+</Warning>
+
+## noPAC (CVE-2021-42287 / 42278)
+
+noPAC is a domain privilege escalation technique that combines two vulnerabilities:
+
+- **CVE-2021-42278** (`sAMAccountName` spoofing) — A machine account can rename itself to match a DC's hostname by removing the trailing `$`.
+- **CVE-2021-42287** (PAC impersonation) — When the KDC cannot find the service ticket's client in the database, it searches for the name with a `$` appended, causing it to issue a ticket for the DC machine account.
+
+By chaining these two bugs, a domain user with permission to create a machine account (default MAQ is 10) can obtain a TGT for a domain controller and achieve full domain compromise.
+
+**Credentials required.** The check requires a valid domain account:
+
+```bash
+netexec smb <target> -u <username> -p <password> -d <domain> -M nopac
+```
+
+## NTLM Reflection
+
+NTLM reflection checks whether the target host is vulnerable to NTLM relay attacks targeting the host itself — where a captured challenge from the target can be replayed back to it. This is the foundation of attacks like PrivExchange and RBCD escalation when combined with cross-protocol relay.
+
+**Credentials required:**
+
+```bash
+netexec smb <target> -u <username> -p <password> -d <domain> -M ntlm_reflection
+```
+
+## Request parameters
+
+All five checks use the same endpoint:
+
+```http
+POST /api/vulns/run
+Content-Type: application/json
+
+{
+  "module": "printnightmare",
+  "target": "10.10.10.5",
+  "username": "",
+  "password": "",
+  "domain": ""
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `module` | Yes | One of: `printnightmare`, `smbghost`, `ms17-010`, `nopac`, `ntlm-reflection`. |
+| `target` | Yes | IP address or hostname of the target. |
+| `username` | Conditional | Required for `nopac` and `ntlm-reflection`. |
+| `password` | Conditional | Required for `nopac` and `ntlm-reflection`. |
+| `domain` | No | Domain name. Auto-populated from Network Info if not supplied. |
+
+If `username` or `password` is missing for a module that requires credentials, the endpoint returns HTTP 400 with an error message.
+
+## Running a check
+
+<Steps>
+  <Step title="Navigate to Vuln Checks">
+    Open **VULNERABILITIES → Vuln Checks** in the sidebar.
+  </Step>
+  <Step title="Select the module">
+    Choose the vulnerability check from the module dropdown.
+  </Step>
+  <Step title="Enter target">
+    Provide the target IP address or hostname.
+  </Step>
+  <Step title="Enter credentials (if required)">
+    noPAC and NTLM Reflection require a valid domain username and password. Use the **Saved Credentials** dropdown to select a previously captured credential, or enter credentials manually.
+  </Step>
+  <Step title="Click Run">
+    The backend launches the NetExec subprocess and waits for completion.
+  </Step>
+  <Step title="Review output">
+    The raw NetExec output appears in the result panel, indicating whether the target is vulnerable.
+  </Step>
+</Steps>
+
+## Output files
+
+Each check writes its output to a file in `recon/`:
+
+```
+recon/vuln-<nxc_module>-<target>.txt
+```
+
+For example:
+
+```
+recon/vuln-printnightmare-10.10.10.5.txt
+recon/vuln-nopac-10.10.10.5.txt
+```
+
+Results are also recorded in **DATA → Scan History** under the corresponding `scan_type` (`printnightmare`, `smbghost`, `ms17-010`, `nopac`, `ntlm-reflection`).
+
+<Tip>
+  Run the unauthenticated checks (PrintNightmare, SMBGhost, MS17-010) as part of your initial host sweep before you have credentials. Add noPAC and NTLM Reflection to your authenticated phase once you have a domain account.
+</Tip>

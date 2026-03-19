@@ -1,0 +1,163 @@
+---
+title: Web screenshots
+description: Playwright-based web application discovery, fingerprinting, and value scoring across your scope.
+---
+
+The Web Screenshots tool takes automated screenshots of every web service in your scope, detects the technology stack running on each target, and ranks results by attack-surface value. High-value targets like Jenkins CI, Exchange OWA, and vCenter appear at the top of the gallery so you can focus on the most impactful entry points first.
+
+## Navigate to the tool
+
+Open **NETWORK → Web Screenshots** in the sidebar.
+
+## How it works
+
+The scan runs in two phases:
+
+1. **Probe phase** — aiohttp sends lightweight HTTP requests to all candidate URLs concurrently (up to 50 parallel connections). Dead URLs are filtered out. Redirects are followed; if a redirect resolves to an unresolvable hostname, the probe retries without following redirects so the original response is still captured.
+2. **Screenshot phase** — Playwright launches a headless Chromium browser and takes a screenshot of each live URL (up to 5 concurrent pages at a time).
+
+All HTTP requests in both phases go through Python's `aiohttp`, which respects the OS routing table. This means requests automatically route through any active VPN interface (tun0) — no proxy configuration needed.
+
+## Target sources
+
+You can provide targets three ways from the UI:
+
+- **Manual entry** — type or paste a list of IPs, hostnames, or full URLs
+- **File upload** — upload a plain text file with one target per line
+- **From Database → Web Applications** — automatically pulls hosts from the database that have confirmed open web ports (populated by a prior nmap scan with the Web port preset)
+
+### Smart port probing
+
+When you provide a plain IP or hostname (no scheme or port), EtherReaper probes it on 8 common web ports:
+
+```
+80 (http), 443 (https), 8080 (http), 8443 (https),
+8000 (http), 8888 (http), 3000 (http), 5000 (http)
+```
+
+When a host comes from the **Web Applications** database filter, its known-open ports (from the nmap scan) are used directly — no re-probing needed.
+
+### VPN-transparent rendering
+
+All HTTP requests in the probe phase use aiohttp, which routes through the OS network stack including VPN tunnels. This means targets in HTB, OSCP labs, or any VPN-routed range are reachable without additional configuration.
+
+### vHost redirect handling
+
+Some servers redirect HTTP requests to a hostname (e.g. `http://10.10.10.5` → `http://cctv.htb`). If that hostname is not in `/etc/hosts`, the browser would fail to resolve it.
+
+EtherReaper handles this automatically: when a redirect leads to an unresolvable hostname, the probe retries the original IP with the target hostname injected as the `Host:` header. No `/etc/hosts` editing required.
+
+## Technology detection
+
+Each screenshot target is fingerprinted across four layers:
+
+<AccordionGroup>
+  <Accordion title="HTTP response headers">
+    Checks for product-identifying headers: `x-jenkins`, `x-powered-by`, `www-authenticate`, `x-owa-version`, `x-jfrog`, `x-gitlab-meta`, and dozens more. Version strings are extracted from headers where available.
+  </Accordion>
+  <Accordion title="DOM content fingerprinting">
+    Inspects the rendered HTML body for product names, login form patterns, page titles, meta generator tags, URL path fragments, and error page signatures. Covers WordPress, Confluence, Grafana, Kibana, ActiveMQ, RabbitMQ, and many others.
+  </Accordion>
+  <Accordion title="JavaScript environment">
+    Checks for global JS variables injected by frameworks and products: `window.__NEXT_DATA__` (Next.js), `window.__APOLLO_CLIENT__` (GraphQL), and similar runtime fingerprints.
+  </Accordion>
+  <Accordion title="Observed network requests">
+    Tracks URL paths requested during page load: `/api/`, `/graphql`, `/actuator/`, `/swagger`, and other path patterns that reveal the application type even when the HTML is minimal.
+  </Accordion>
+</AccordionGroup>
+
+## Value scoring
+
+Each target receives a numeric score based on the technologies detected. Higher scores float to the top of the gallery:
+
+| Score | Technology tier | Examples |
+|-------|----------------|----------|
+| 5 | Org/domain compromise | Jenkins, GitLab, GitHub Enterprise, Jira, Confluence, Nexus, Artifactory, vCenter, OWA/Exchange, AD FS, Okta, PingFederate, Citrix Gateway, Palo Alto, Fortinet, F5 BIG-IP |
+| 4 | Infrastructure / admin | Grafana, Kibana, Elasticsearch, Prometheus, Tomcat, Apache Solr, RabbitMQ, ActiveMQ, Portainer, Kubernetes Dashboard |
+| 3 | Data / storage / misc | MongoDB, Redis, MinIO, and similar data services |
+| 2 | CMS / API surface | WordPress, Drupal, and similar |
+| 1 | Server info only | Apache, nginx, IIS version headers with no higher-value fingerprints |
+| −2 or −4 | Noise reduction | 404 responses and plain pages are penalized |
+
+## Tag badges
+
+Each gallery card displays color-coded technology badges:
+
+| Color | Meaning |
+|-------|---------|
+| Orange | High-value target (score ≥ 4) |
+| Yellow | Medium-value (score 2–3) |
+| Gray | Framework/server info only |
+
+## Gallery controls
+
+The results gallery provides per-card controls:
+
+- **Checkmark (✓)** — mark the target as reviewed; card is visually dimmed
+- **× (dismiss)** — remove the card from the gallery view
+- **Click the URL** — copies the URL to the clipboard
+- **Click the thumbnail** — opens a full-size lightbox view of the screenshot
+
+## Persistent results
+
+Gallery results survive page navigation and app restarts. Results are stored in:
+
+```
+recon/webscreenshot_<scan_id>.json
+```
+
+Individual screenshot PNG files are stored in:
+
+```
+recon/screenshots/<filename>.png
+```
+
+When a new scan starts, the previous JSON file and its associated PNGs are automatically deleted.
+
+To retrieve the latest completed scan results via API:
+
+```http
+GET /api/webscreenshot/latest
+```
+
+## Monitoring scan progress
+
+Poll the status endpoint to track scan progress:
+
+```http
+GET /api/webscreenshot/status?scan_id=<id>
+```
+
+Response fields:
+
+```json
+{
+  "status": "running",
+  "phase": "screenshotting",
+  "total": 24,
+  "completed": 10,
+  "probe_total": 64,
+  "error": null,
+  "results": []
+}
+```
+
+`phase` is either `probing` or `screenshotting`. `results` is populated only when `status` is `completed`.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="0 hosts found in the Web Applications filter">
+    The Web Applications filter queries `hosts.ports` for known web port numbers. This column is only populated after running an nmap scan with the **Web** port preset. Run that scan first, then return to Web Screenshots.
+  </Accordion>
+  <Accordion title="ERR_ADDRESS_UNREACHABLE errors">
+    The aiohttp probe routes through your OS network stack. If you are targeting a VPN-routed range (HTB, OSCP), ensure your VPN interface (tun0) is connected before starting the scan.
+  </Accordion>
+  <Accordion title="Playwright: Executable doesn't exist">
+    Chromium binaries must be installed as your regular user (not root). Run:
+    ```bash
+    source venv/bin/activate && playwright install chromium
+    ```
+    This installs binaries to `~/.cache/ms-playwright/` under your user account.
+  </Accordion>
+</AccordionGroup>

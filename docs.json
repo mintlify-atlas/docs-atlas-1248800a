@@ -1,122 +1,144 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "EtherReaper",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#00B4D8",
+    "light": "#90E0EF",
+    "dark": "#03045E"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/k3nundrum/illwilltherreaper"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/k3nundrum/illwilltherreaper"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "installation",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "concepts/architecture",
+              "concepts/credential-flow",
+              "concepts/kerberos-auth",
+              "concepts/scan-output"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Network Reconnaissance",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "recon/nmap",
+              "recon/masscan",
+              "recon/nuclei",
+              "recon/web-screenshots",
+              "recon/smb-signing"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Layer 2 Attacks",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "layer2/responder",
+              "layer2/mitm6",
+              "layer2/asrepcatcher"
+            ]
+          },
+          {
+            "group": "Vulnerability Checks",
+            "pages": [
+              "vulns/overview",
+              "vulns/coerce",
+              "vulns/zerologon",
+              "vulns/printnightmare",
+              "vulns/masterBaiter"
+            ]
+          },
+          {
+            "group": "Active Directory",
+            "pages": [
+              "ad/user-enumeration",
+              "ad/unauthenticated",
+              "ad/authenticated",
+              "ad/adcs",
+              "ad/bloodhound"
+            ]
+          },
+          {
+            "group": "Data Management",
+            "pages": [
+              "data/credentials",
+              "data/hosts",
+              "data/scope",
+              "data/scan-history",
+              "data/domain-info"
+            ]
+          },
+          {
+            "group": "Troubleshooting",
+            "pages": [
+              "troubleshooting"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Overview",
             "pages": [
-              "api-reference/introduction"
+              "api/overview"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Network Info",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/network-info"
+            ]
+          },
+          {
+            "group": "Scans",
+            "pages": [
+              "api/scans-nmap",
+              "api/scans-masscan",
+              "api/scans-nuclei"
+            ]
+          },
+          {
+            "group": "Credentials",
+            "pages": [
+              "api/credentials"
+            ]
+          },
+          {
+            "group": "Active Directory",
+            "pages": [
+              "api/ad-attacks"
+            ]
+          },
+          {
+            "group": "Layer 2",
+            "pages": [
+              "api/layer2"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

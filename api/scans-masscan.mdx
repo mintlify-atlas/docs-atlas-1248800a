@@ -1,0 +1,116 @@
+---
+title: "Scans — Masscan"
+description: "API endpoint for launching Masscan fast port discovery scans across large IP ranges."
+---
+
+Masscan is a high-speed TCP port scanner capable of scanning the entire internet in under 6 minutes. EtherReaper uses it for rapid host and port discovery across large IP ranges before running detailed Nmap scans.
+
+<Note>
+  Masscan requires root privileges (raw sockets). The `sudo_password` field is mandatory. Scans are asynchronous — use `GET /api/scan-status/{scan_id}` to poll completion.
+</Note>
+
+---
+
+## POST /api/scans/masscan
+
+Launches a Masscan scan for fast host and port discovery. Results are parsed from Masscan XML output and populated into the `hosts` table.
+
+```bash
+curl -X POST http://localhost:8000/api/scans/masscan \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "10.10.10.0/24",
+    "portPreset": "top1000",
+    "rate": 10000,
+    "sudo_password": "kali"
+  }'
+```
+
+### Request Body
+
+<ParamField body="target" type="string" required>
+  Scan target. Accepts single IP (`10.10.10.1`), CIDR range (`10.10.10.0/24`), dash range (`10.10.10.1-254`), or comma-separated list.
+</ParamField>
+
+<ParamField body="portPreset" type="string">
+  Port selection preset.
+
+  | Value | Masscan flag |
+  |-------|-------------|
+  | `top100` | `--top-ports 100` |
+  | `top1000` | `--top-ports 1000` |
+  | `custom` | Uses the `ports` field value |
+</ParamField>
+
+<ParamField body="ports" type="string">
+  Explicit port specification when `portPreset` is `"custom"` (e.g. `"1-65535"` or `"80,443,8080"`).
+</ParamField>
+
+<ParamField body="rate" type="integer">
+  Packets per second. Defaults to `10000`. Higher values increase speed but may drop packets on slow links or VPNs.
+</ParamField>
+
+<ParamField body="randomize" type="boolean">
+  Randomize host scan order (`--randomize-hosts`). Defaults to `true`.
+</ParamField>
+
+<ParamField body="openOnly" type="boolean">
+  Only report open ports (`--open-only`). Defaults to `true`.
+</ParamField>
+
+<ParamField body="sudo_password" type="string" required>
+  Sudo password. Masscan requires root for raw socket access.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` when the scan was launched.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  UUID for polling via `GET /api/scan-status/{scan_id}`.
+</ResponseField>
+
+<ResponseField name="command" type="string">
+  The Masscan command executed (password redacted).
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "status": "success",
+  "scan_id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+  "command": "sudo masscan 10.10.10.0/24 --top-ports 1000 --rate 10000 -oX recon/masscan_20240115_143200.xml --randomize-hosts --open-only"
+}
+```
+
+---
+
+## Recommended workflow
+
+<Steps>
+  <Step title="Run Masscan for discovery">
+    Use `top1000` preset with a high rate to quickly find live hosts and open ports across your scope.
+  </Step>
+  <Step title="Review discovered hosts">
+    Check **DATA → Hosts** to see all IPs and ports discovered by Masscan.
+  </Step>
+  <Step title="Run Nmap for service detection">
+    Target the discovered hosts with Nmap (`default` or `thorough` preset) to get service version info, OS fingerprinting, and script output.
+  </Step>
+  <Step title="Run Web Screenshots">
+    After Nmap populates port data, use **NETWORK → Web Screenshots** with the "From Database" source to automatically target web-facing hosts.
+  </Step>
+</Steps>
+
+<Tip>
+  On VPN connections (HTB, OSCP labs), use a lower rate (1000–5000) to avoid dropped packets. On LAN, rates of 50000+ work reliably.
+</Tip>
+
+---
+
+## Output file
+
+Masscan results are written to `recon/masscan_<timestamp>.txt` and stored in the SQLite `scans` table. The output file path is returned in the scan status response and linked in the Scan History UI.

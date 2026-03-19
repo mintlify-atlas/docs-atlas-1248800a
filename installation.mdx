@@ -1,0 +1,144 @@
+---
+title: Installation
+description: Install EtherReaper on Kali Linux or a Debian-based system using the provided setup script.
+---
+
+## System Requirements
+
+| Requirement | Details |
+|-------------|----------|
+| Operating system | Kali Linux (2024+ recommended) or Debian-based |
+| Python | 3.10 or higher |
+| Privileges for setup | Root (`sudo ./setup.sh`) |
+| Privileges for running | Regular user — **do not run as root** |
+| Internet access | Required during setup to download tools and browser binaries |
+
+## What setup.sh Installs
+
+### System Tools (via apt)
+
+| Tool | Purpose |
+|------|---------|
+| `nmap` | Service version detection, OS fingerprinting, script scanning |
+| `masscan` | Fast host and port discovery across large IP ranges |
+| `netexec` | SMB/LDAP/LSA enumeration, BloodHound collection |
+| `responder` | LLMNR/NBT-NS/mDNS poisoning, NTLM credential capture |
+| `nuclei` | Template-based vulnerability scanning |
+| `mitm6` | IPv6 DHCPv6 spoofing for relay attacks |
+
+### Additional Tools (downloaded/cloned)
+
+| Tool | Install location | Source |
+|------|-----------------|--------|
+| `ldapnomnom` | `/usr/bin/ldapnomnom` | GitHub releases (v1.4.2, linux-x64 binary) |
+| `ASRepCatcher` | `./ASRepCatcher/` | Cloned from `https://github.com/Yaxxine7/ASRepCatcher` in its own venv |
+
+### Python Packages (in `./venv`)
+
+| Package | Purpose |
+|---------|---------|
+| `fastapi` | Web framework / API server |
+| `uvicorn[standard]` | ASGI server |
+| `aiohttp` | HTTP probing for web screenshots (VPN-transparent) |
+| `playwright` + Chromium | Browser automation for web screenshots |
+| `impacket` | Kerberos, NTLM, and AD protocol support |
+| `netifaces` | Network interface enumeration |
+| `websockets`, `pydantic`, `python-multipart`, `aiofiles` | Supporting libraries |
+| `pillow`, `pytesseract` | RDP screenshot OCR |
+
+## Installation Steps
+
+<Warning>
+Do **not** run `run.sh` as root. The setup script (`setup.sh`) requires root to install system packages and binary tools, but the application itself must run as your regular user. Running the app as root will break Playwright (browser binaries are installed to the regular user's `~/.cache/ms-playwright/`) and is an unnecessary security risk.
+</Warning>
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone EtherReaper into a directory of your choice:
+
+    ```bash
+    git clone <repo-url>
+    cd etherreaper
+    ```
+  </Step>
+
+  <Step title="Run the setup script as root">
+    The setup script must run as root to install system packages, binaries, and configure file ownership:
+
+    ```bash
+    sudo ./setup.sh
+    ```
+
+    The script detects the invoking user via `who am i` and creates the Python venv **as that user** (not root), so ownership is correct from the start.
+  </Step>
+
+  <Step title="What the setup script does">
+    In order, `setup.sh`:
+
+    1. Installs system packages via `apt`: nmap, masscan, netexec, responder, nuclei, mitm6, git, sqlite3, python3-impacket, python3-pip, python3-venv, tesseract-ocr
+    2. Creates `./venv` as the **actual user** (not root) using `sudo -u $ACTUAL_USER python3 -m venv venv`
+    3. Installs all Python packages into the venv
+    4. Installs Playwright system browser dependencies as root, then installs the Chromium binary as the **actual user** so it lands in `~/.cache/ms-playwright/` (not `/root/`)
+    5. Clones ASRepCatcher and installs it in its own venv (`ASRepCatcher/ASRepCatcher-venv`):
+       ```bash
+       git clone https://github.com/Yaxxine7/ASRepCatcher ASRepCatcher
+       ```
+    6. Downloads the `ldapnomnom` binary (v1.4.2, linux-x64) to `/usr/bin/ldapnomnom`
+    7. Creates `recon/`, `data/`, and `wordlists/` directories with ownership set to the actual user
+    8. Sets correct permissions on all project files and directories
+  </Step>
+
+  <Step title="Verify the installation">
+    After setup completes, verify the key components are in place:
+
+    ```bash
+    # Python venv
+    ls venv/bin/python
+
+    # Playwright Chromium (as regular user, not root)
+    ls ~/.cache/ms-playwright/
+
+    # ASRepCatcher
+    ls ASRepCatcher/ASRepCatcher-venv/
+
+    # ldapnomnom binary
+    which ldapnomnom
+
+    # System tools
+    which nmap masscan netexec responder nuclei mitm6
+    ```
+  </Step>
+
+  <Step title="Start the application">
+    Run as your regular user (without sudo):
+
+    ```bash
+    ./run.sh
+    ```
+
+    The app will be available at `http://localhost:8000`.
+
+    See the [Quickstart](/quickstart) guide for first-session setup.
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Playwright: Executable doesn't exist
+
+This happens when Chromium was installed as root instead of as your regular user. Fix it by reinstalling the browser binary as your regular user:
+
+```bash
+source venv/bin/activate && playwright install chromium
+```
+
+Run this command as your regular user (not root) so the binary installs to `~/.cache/ms-playwright/`.
+
+### Port 8000 already in use
+
+```bash
+lsof -i :8000
+kill -9 <PID>
+# or start on a different port:
+./run.sh --port 9000
+```

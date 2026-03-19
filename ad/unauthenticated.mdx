@@ -1,0 +1,123 @@
+---
+title: 'AD unauthenticated'
+description: 'Active Directory attacks and checks that require no domain credentials — useful for initial foothold enumeration.'
+---
+
+The unauthenticated AD scans are designed to run before you have valid domain credentials. They target weaknesses in Kerberos pre-authentication, SMB signing, and timestamp-based attacks that expose information or credentials to an unauthenticated attacker on the network.
+
+<Warning>
+All tools on this page must be used only in authorized penetration test environments. Zerologon in particular can destabilize a domain controller if misused.
+</Warning>
+
+## SMB signing check
+
+Checks SMB signing enforcement across one or more targets without requiring credentials. Hosts with signing disabled or not required are potential targets for NTLM relay attacks.
+
+**Endpoint:** `POST /api/smbsigning/run`
+
+**Under the hood:** Runs `netexec smb <target> --gen-relay-list relay_list.txt`. SMB signing status and SMBv1 support for each host are parsed and stored in the `hosts` database table. The relay list is saved to `recon/relay_list.txt`.
+
+**Request body — single target:**
+
+```json
+{
+  "target": "192.168.1.10"
+}
+```
+
+**Request body — multiple targets:**
+
+```json
+{
+  "targets": ["192.168.1.10", "192.168.1.11", "192.168.1.12"]
+}
+```
+
+You can also pass a comma-separated string to the `target` field and it will be split automatically.
+
+**Results stored in:** `hosts` table (`signing`, `smbv1` columns). Existing host records are updated; new hosts are inserted.
+
+**Output file:** `recon/relay_list.txt` — contains IPs with signing disabled, ready for use with ntlmrelayx.
+
+<Tip>
+Run this scan against your full scope to build the relay list before launching NTLM relay attacks with Responder or mitm6.
+</Tip>
+
+## TimeRoast
+
+TimeRoast exploits a weakness in the NTP (Network Time Protocol) authentication mechanism. Domain computers authenticate NTP requests using their machine account password hash. By sending crafted NTP requests and collecting the responses, you can obtain crackable hashes for machine accounts without any domain credentials.
+
+**Endpoint:** `POST /api/timeroast/run`
+
+**Under the hood:** Runs `netexec smb <target> -M timeroast`. If no target is provided, the DC IP from Network Info is used automatically.
+
+**Request body:**
+
+```json
+{
+  "target": "192.168.1.10"
+}
+```
+
+The `target` field is optional. If omitted, EtherReaper auto-populates the DC IP from the saved network configuration.
+
+**Output file:** `recon/timeroast-<target>.txt`
+
+**When to use:** When you can reach the DC on the network but have no domain credentials. Cracked machine account hashes can be used for authenticated scans or lateral movement.
+
+<Note>
+TimeRoast hashes are machine account NTLM hashes and require offline cracking with hashcat or john. They are not automatically stored in the credentials database.
+</Note>
+
+## AS-REP Roast (unauthenticated)
+
+Enumerates domain accounts that have Kerberos pre-authentication disabled (`DONT_REQ_PREAUTH` flag). For those accounts, the KDC will return an AS-REP message encrypted with the account's password hash — no authentication required. The hash can then be cracked offline.
+
+**Endpoint:** `POST /api/asreproast-unauth/run`
+
+**Under the hood:** Runs `netexec ldap <target> -u '' -p '' -d <domain> --asreproast <output_file>`. Uses empty credentials to trigger AS-REP responses. Discovered hashes are automatically parsed by `parse_asreproast_hashes` and stored in the credentials database.
+
+**Request body:**
+
+```json
+{
+  "target": "192.168.1.10",
+  "domain": "corp.local"
+}
+```
+
+Both fields are optional — if omitted, EtherReaper auto-populates from saved network configuration.
+
+**Output file:** `recon/asreproasting-unauth.txt`
+
+**Hash format:** AS-REP hashes are stored in hashcat format (`$krb5asrep$23$...`) and saved to the credentials database with source `asreproast_unauth`.
+
+**When to use:** Before obtaining credentials. If any accounts have pre-authentication disabled, you get crackable hashes for free.
+
+<Tip>
+After cracking, use the recovered password to run authenticated scans (Kerberoast, BloodHound, ADCS) from the authenticated AD section.
+</Tip>
+
+## Zerologon (CVE-2020-1472)
+
+Zerologon is a critical unauthenticated authentication bypass vulnerability in the Netlogon protocol. An attacker on the network can impersonate any domain computer — including domain controllers — without knowing any credentials.
+
+<Warning>
+Zerologon exploitation can corrupt the DC's machine account password and take the domain controller offline. Use the check-only mode in authorized engagements. See the dedicated vulnerability page for full details.
+</Warning>
+
+For the Zerologon scan and exploitation workflow, see the [Zerologon](/vulns/zerologon) page.
+
+## Scan storage
+
+All unauthenticated scan results are logged to the `scans` table in SQLite with the following fields:
+
+| Field | Description |
+|---|---|
+| `scan_type` | `smbsigning`, `timeroast`, `asreproast_unauth` |
+| `target` | Target IP or hostname |
+| `status` | `running`, `completed`, `failed`, `error` |
+| `output_file` | Path to raw tool output in `recon/` |
+| `created_at` / `completed_at` | Timestamps |
+
+View all scan history at **DATA → Scan History**.

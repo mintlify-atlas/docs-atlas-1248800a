@@ -1,0 +1,179 @@
+---
+title: 'Kerberos authentication'
+description: 'How EtherReaper handles both NTLM and Kerberos ccache authentication, TGT acquisition, clock skew prevention, and ccache file management.'
+---
+
+EtherReaper supports two distinct authentication modes for all authenticated scans: NTLM credentials (username + password or NTLM hash) and Kerberos ccache files. The mode is selected per-session via the Network Info bar and is respected by every authenticated scan modal.
+
+## Auth detection
+
+The `detect_auth()` function probes the domain controller to determine which authentication protocols are available:
+
+```python
+def detect_auth(host, timeout=1):
+    krb  = port_open(88)          # Kerberos KDC port
+    ntlm = (port_open(135) and rpc_available()) or port_open(445)  # RPC/SMB
+
+    if krb and ntlm:
+        return "Kerberos+NTLM"
+    elif krb:
+        return "Kerberos"
+    elif ntlm:
+        return "NTLM"
+    else:
+        return "Unknown"
+```
+
+This runs automatically when a DC IP is saved to the Network Info bar, and the result is stored in `network_info.auth_method`. Port 88 (Kerberos) and ports 135/445 (NTLM via RPC and SMB) are checked.
+
+## NTLM credential helpers
+
+Two helper functions normalise NTLM credential handling across all scan modules:
+
+### `is_hash()`
+
+Detects whether a string is an NTLM hash rather than a plaintext password:
+
+```python
+def is_hash(password):
+    # 32-char hex: NTLM hash
+    if re.match(r'^[a-fA-F0-9]{32}$', password):
+        return True
+    # LM:NTLM format (64 hex chars with colon)
+    if re.match(r'^[a-fA-F0-9]{32}:[a-fA-F0-9]{32}$', password):
+        return True
+    return False
+```
+
+### `get_auth_flag()`
+
+Returns the correct netexec flag based on whether the credential is a hash or password:
+
+```python
+def get_auth_flag(password):
+    return '-H' if is_hash(password) else '-p'
+```
+
+This is called throughout the backend to automatically switch between `-p password` and `-H ntlmhash` in every netexec command.
+
+## Kerberos ccache authentication
+
+### Acquiring a TGT
+
+The `POST /api/kerberos/acquire-tgt` endpoint obtains a TGT from the KDC using `impacket-getTGT`:
+
+<Steps>
+  <Step title="Sync time with DC">
+    Kerberos requires clocks to be within 5 minutes of the KDC. The endpoint first runs `sudo ntpdate -u <dc_ip>` to prevent clock skew errors:
+
+    ```python
+    cmd = f"sudo -S ntpdate -u {shlex.quote(dc_ip)}"
+    ```
+  </Step>
+
+  <Step title="Locate the getTGT binary">
+    The binary is probed in order of preference: `impacket-getTGT` (system PATH), then the venv entry-point, then `/usr/bin/` and `/usr/local/bin/`, then finally as a Python module (`python3 -m impacket.examples.getTGT`).
+  </Step>
+
+  <Step title="Run getTGT">
+    The command is run from the ccache directory so the output file lands in the right place:
+
+    ```bash
+    cd recon/ccache && impacket-getTGT DOMAIN/username:password -dc-ip <dc_ip>
+    ```
+
+    The ccache file is named `username.ccache`.
+  </Step>
+
+  <Step title="Set KRB5CCNAME and save path">
+    On success, the environment variable is set in the server process and the path is persisted to the database:
+
+    ```python
+    os.environ["KRB5CCNAME"] = dst_ccache
+    cursor.execute("UPDATE network_info SET ccache_path = ? WHERE id = 1", (dst_ccache,))
+    ```
+  </Step>
+</Steps>
+
+### Time synchronisation
+
+The `sync_time_with_dc()` async helper handles clock synchronisation independently of TGT acquisition. It is also called by `prepare_ccache_auth()` before any authenticated scan that uses an existing ccache:
+
+```python
+async def sync_time_with_dc(dc_ip_or_domain, sudo_password):
+    cmd = f"sudo -S ntpdate {dc_ip_or_domain}"
+    # writes sudo_password to stdin, times out after 10 seconds
+```
+
+<Warning>
+Kerberos authentication will fail with `KRB_AP_ERR_SKEW` if the clock difference between your machine and the KDC exceeds 5 minutes. Always ensure time sync is working.
+</Warning>
+
+### Parsing a ccache file
+
+The `parse_ccache_principal()` function extracts the identity stored in a ccache using `klist`:
+
+```python
+def parse_ccache_principal(ccache_file):
+    result = subprocess.run(['klist', '-c', ccache_file], ...)
+    # Looks for: "Default principal: username@DOMAIN.COM"
+    for line in result.stdout.splitlines():
+        if "Default principal" in line:
+            principal = line.split(":")[-1].strip()
+            username, domain = principal.split("@", 1)
+            username = username.rstrip('$')  # strip machine account suffix
+            domain = domain.lower()
+            return username, domain
+```
+
+### Using ccache in authenticated scans
+
+When a scan is configured to use a ccache file, the backend passes `--use-kcache` to netexec instead of a username/password. The target must be specified by **DC hostname** (not IP address), because the Kerberos ticket is issued for the hostname and will be rejected if the IP does not match the service principal.
+
+```bash
+# With NTLM credentials:
+netexec smb 10.10.10.1 -u jsmith -p Password123
+
+# With ccache:
+KRB5CCNAME=/path/to/jsmith.ccache netexec smb dc01.corp.local --use-kcache
+```
+
+<Info>
+The DC hostname is automatically pulled from `network_info.dc_host` when ccache auth is selected. If the DC hostname field is blank, scans will fail — fill it in via the Network Info bar.
+</Info>
+
+## ccache file locations
+
+| Source | Location |
+|--------|----------|
+| TGTs acquired via the UI (`/api/kerberos/acquire-tgt`) | `recon/ccache/<username>.ccache` |
+| Manually placed ccache files | `recon/ccache/*.ccache` |
+| Pre2K computer ccaches | Copied from `~/.nxc/modules/pre2k/ccache/` into `recon/ccache/` |
+
+### Pre2K ccache copy
+
+When a Pre-Windows 2000 computer account TGT is obtained by the Pre2K scan, the `parse_pre2k_output()` function automatically copies all `.ccache` files from the netexec module's output directory into `recon/ccache/`:
+
+```python
+nxc_ccache_dir = os.path.expanduser("~/.nxc/modules/pre2k/ccache")
+for ccache_file in os.listdir(nxc_ccache_dir):
+    if ccache_file.endswith('.ccache'):
+        shutil.copy2(src, dst)  # copy2 preserves metadata
+```
+
+After this, the ccache files appear in the ccache selector dropdown immediately.
+
+## `prepare_ccache_auth()` unified helper
+
+All scan endpoints that accept a ccache use `prepare_ccache_auth()` to perform the two prerequisite steps in one call:
+
+```python
+async def prepare_ccache_auth(ccache_file, sudo_password):
+    username, domain = parse_ccache_principal(ccache_file)
+    if not username or not domain:
+        return None, None
+    await sync_time_with_dc(domain, sudo_password)
+    return username, domain
+```
+
+This ensures the clock is always synchronised and the principal is always parsed before any Kerberos-authenticated command is run.

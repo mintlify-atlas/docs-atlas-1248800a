@@ -1,0 +1,224 @@
+---
+title: 'Domain Info'
+description: 'Collected Active Directory domain data: DC enumeration, password policy, Machine Account Quota, delegation, trusts, SCCM infrastructure, and ADCS vulnerabilities.'
+---
+
+The Domain Info page aggregates authenticated LDAP query results into a structured view of the target domain. Each tab covers a different aspect of the AD environment and can be populated independently.
+
+## Domain info data
+
+### domain_info table schema
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER | Primary key |
+| `domain` | TEXT | Domain FQDN |
+| `dc_host` | TEXT | Domain controller hostname |
+| `dc_ip` | TEXT | Domain controller IP address |
+| `dc_info` | TEXT | Raw netexec output line for this DC |
+| `maq` | INTEGER | Machine Account Quota (how many computer accounts a user can create) |
+| `domain_sid` | TEXT | Domain SID |
+| `discovered_at` | TIMESTAMP | When the record was written |
+
+### network_info table (session context)
+
+The `network_info` table stores the active session configuration set in the Network Info bar at the top of the UI.
+
+| Column | Description |
+|---|---|
+| `host` | Your machine's hostname |
+| `ip` | Your machine's IP |
+| `domain` | Target domain FQDN |
+| `dc_host` | Target DC hostname |
+| `dc_ip` | Target DC IP |
+| `ext_ip` | External/routable IP |
+| `auth_method` | Authentication method: `NTLM` or `Kerberos` |
+| `requires_kerberos` | `1` if Kerberos-only mode is active |
+| `ccache_path` | Path to the active ccache file |
+
+## Running a domain info scan
+
+```http
+POST /api/domain-info/run
+```
+
+Starts a background domain info collection job. The scan runs four netexec LDAP commands in sequence:
+
+1. **Pass policy, MAQ, and Domain SID** — run in parallel for speed
+2. **DC list** — `--dc-list` to enumerate all domain controllers
+3. **Trusts** — derived from the dc-list output, parsed for trust relationships
+
+**Request body**
+
+```json
+{
+  "target": "10.10.10.10",
+  "domain": "corp.local",
+  "username": "administrator",
+  "password": "Password123!"
+}
+```
+
+Kerberos ccache authentication is also supported. Set `use_kcache: true` and provide `ccache_file`.
+
+**Response** (immediate, scan runs in background)
+
+```json
+{
+  "status": "success",
+  "message": "Domain info scan started in background",
+  "scan_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "command": "netexec ldap 10.10.10.10 -u administrator -p '...' [--pass-pol | -M maq | --get-sid | --dc-list]"
+}
+```
+
+Use `GET /api/scan-status/{scan_id}` to poll for completion.
+
+## API endpoints
+
+### Get domain info
+
+```http
+GET /api/domain-info
+```
+
+Returns all rows from the `domain_info` table.
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "data": [
+    {
+      "domain": "corp.local",
+      "dc_host": "DC01",
+      "dc_ip": "10.10.10.10",
+      "dc_info": "Windows Server 2019",
+      "maq": 10,
+      "domain_sid": "S-1-5-21-...",
+      "discovered_at": "2024-01-15 12:34:56"
+    }
+  ]
+}
+```
+
+### Get password policy
+
+```http
+GET /api/password-policy
+```
+
+Returns the most recently discovered password policy.
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "policy": {
+    "domain": "corp.local",
+    "min_password_length": 7,
+    "password_history_length": 24,
+    "max_password_age": "42 days",
+    "min_password_age": "1 day",
+    "account_lockout_threshold": 5,
+    "locked_account_duration": "30 minutes",
+    "reset_account_lockout_counter": "30 minutes",
+    "domain_password_complex": 1,
+    "discovered_at": "2024-01-15 12:34:56"
+  }
+}
+```
+
+Returns `{ "status": "success", "policy": null }` if no policy has been collected yet.
+
+## Tabs
+
+### Domain Info tab
+
+Displays DC hostname, DC IP, domain name, MAQ, and Domain SID. Multiple DCs in the same domain appear as separate rows.
+
+**MAQ** (Machine Account Quota) indicates how many computer accounts a regular domain user can create. A non-zero MAQ is a prerequisite for several attacks (RBCD, noPAC). The value is populated by the `netexec ldap -M maq` module.
+
+### Password Policy tab
+
+Displays the full password policy including minimum length, complexity requirements, lockout threshold, lockout duration, and reset counter. Collected via `netexec ldap --pass-pol`.
+
+<Warning>
+Review the lockout threshold before running any password spray attacks. A threshold of 3-5 with a short reset counter requires careful timing to avoid locking accounts.
+</Warning>
+
+### ADCS tab
+
+Links to ADCS vulnerability data collected by the ADCS scan. Calls `GET /api/adcs/vulns` to retrieve stored Certipy findings (ESC1–ESC8+). Also provides a shortcut to launch the ESC1 automated attack chain.
+
+### Delegation tab
+
+Displays Kerberos delegation findings: unconstrained, constrained, and resource-based constrained delegation.
+
+**Run a delegation scan:**
+
+```http
+POST /api/domain-info/delegation/run
+```
+
+Runs `netexec ldap --find-delegation` against the DC. Parses and stores results in the `delegation` table.
+
+**Delegation table schema:**
+
+| Column | Description |
+|---|---|
+| `domain` | Domain FQDN |
+| `account_name` | Account with delegation configured |
+| `account_type` | `computer` or `user` |
+| `delegation_type` | Delegation type string (e.g. `Unconstrained`, `Constrained`) |
+| `delegation_rights_to` | Target SPN or `N/A` for unconstrained |
+
+**Retrieve stored delegation data:**
+
+```http
+GET /api/domain-info/delegation/data
+```
+
+### Trusts tab
+
+Displays domain trust relationships discovered during the dc-list scan.
+
+**Trusts table schema (`domain_trusts`):**
+
+| Column | Description |
+|---|---|
+| `source_domain` | The domain that was queried |
+| `trusted_domain` | The trusted or trusting domain |
+| `discovered_at` | Discovery timestamp |
+
+```http
+GET /api/domain-info/trusts/data
+```
+
+Trust data is parsed automatically from the `--dc-list` output. Three output formats from netexec are handled:
+
+- Failed DNS resolution lines: `Failed to resolve DCs for <domain> via DNS:`
+- Found DC lines: `[+] Found DC in trusted domain: <hostname>`
+- Trust relationship lines: `<domain> -> Bidirectional -> Forest Transitive`
+
+### SCCM tab
+
+Displays SCCM/MECM infrastructure discovered via the netexec `sccm` module.
+
+**Run an SCCM scan:**
+
+```http
+POST /api/domain-info/sccm/run
+```
+
+Runs `netexec ldap -M sccm` against the DC. Results are stored across four tables: `sccm_info`, `sccm_site_servers`, `sccm_management_points`, and `sccm_objects`.
+
+**Retrieve stored SCCM data:**
+
+```http
+GET /api/domain-info/sccm/data
+```
+
+Returns site configuration, site servers, management points, and enrolled users and computers.

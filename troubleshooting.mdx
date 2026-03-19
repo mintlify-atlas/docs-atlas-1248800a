@@ -1,0 +1,144 @@
+---
+title: 'Troubleshooting'
+description: 'Common issues and fixes for EtherReaper: Playwright errors, scan controls, sudo prompts, port conflicts, and general tips.'
+---
+
+<AccordionGroup>
+
+  <Accordion title="Playwright screenshots fail with ERR_ADDRESS_UNREACHABLE">
+    EtherReaper routes all screenshot HTTP requests through Python's `aiohttp`, which uses the OS routing table rather than Chromium's own network stack. This means Chromium can reach internal or VPN-routed targets that would otherwise be blocked.
+
+    If screenshots fail with `ERR_ADDRESS_UNREACHABLE`, your VPN tunnel is not up. Ensure your VPN (e.g. `tun0`) is connected before running the web screenshot scan.
+
+    **Steps to verify:**
+
+    ```bash
+    ip a show tun0
+    ping -c 1 <target-ip>
+    ```
+
+    Once the VPN is connected and the target is reachable from the terminal, re-run the scan.
+  </Accordion>
+
+  <Accordion title="Playwright: Executable doesn't exist">
+    Playwright's Chromium binary must be installed as the regular user, not root. If the binary is missing, install it:
+
+    ```bash
+    source venv/bin/activate && playwright install chromium
+    ```
+
+    Run this as your **regular user** (not root). The binary installs to `~/.cache/ms-playwright/`. If you ran `setup.sh` as root, the binary may have been placed in root's home directory and will not be found when the app runs as a normal user.
+
+    <Warning>
+      Do not run `playwright install` with `sudo`. The binary path is user-specific.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="0 hosts found in the Web Applications database filter">
+    The **Web Applications** filter in the web screenshot module calls `GET /api/hosts/by-type/web`. This endpoint checks two sources:
+
+    - `scan_results` table — port rows written by Nmap scans
+    - `hosts.ports` column — comma-separated port numbers at the host level
+
+    If both are empty, no hosts match. This happens when no Nmap scan has been run yet.
+
+    **Fix:** Run an Nmap scan against your scope first (NETWORK → Nmap). Once the scan completes and its XML is parsed, hosts with web ports (80, 443, 8080, 8443, etc.) will appear in the filter.
+
+    Masscan-only results are also picked up if the Masscan output was imported, since Masscan writes port numbers to `hosts.ports`.
+  </Accordion>
+
+  <Accordion title="Coerce or Responder kill button doesn't stop the scan">
+    The kill button in the UI does two things:
+
+    1. Aborts the frontend fetch loop (stops streaming output to the browser)
+    2. Sends a `POST /api/scans/kill` request to terminate the underlying process
+
+    If the process continues running after pressing kill, the most likely cause is that `netexec` or another subprocess is still alive.
+
+    **Diagnose via Scan History:**
+
+    1. Go to **DATA → Scan History**
+    2. Find the scan and check its status
+    3. If status is still `running`, use the kill button there or manually terminate:
+
+    ```bash
+    pkill -f netexec
+    pkill -f responder
+    ```
+
+    <Note>
+      Long-running Coerce scans use `ALWAYS=true` to keep checking even after a successful coerce. This is intentional behavior. The kill button sends SIGTERM to the process group.
+    </Note>
+  </Accordion>
+
+  <Accordion title="App is blocked at a sudo password prompt">
+    Tools that require elevated privileges (Nmap with `-O`, Masscan, Responder, mitm6, ASRepCatcher) use a shared sudo modal in the UI. When you see the modal:
+
+    1. Enter your user password
+    2. Optionally check **Save for session** to avoid re-entering it for subsequent scans
+
+    The password is passed to the process via `stdin` (`sudo -S`) and never stored on disk or logged.
+
+    EtherReaper **must not be run as root** — the sudo prompt is expected behavior for tools that need brief elevation.
+  </Accordion>
+
+  <Accordion title="Port 8000 is already in use">
+    If another process is using port 8000:
+
+    ```bash
+    lsof -i :8000
+    kill -9 <PID>
+    ```
+
+    Or start EtherReaper on a different port:
+
+    ```bash
+    ./run.sh --port 9000
+    ```
+
+    Then access the app at `http://localhost:9000`.
+  </Accordion>
+
+</AccordionGroup>
+
+## General tips
+
+<AccordionGroup>
+
+  <Accordion title="Do not run as root">
+    EtherReaper is designed to run as a regular user. Running with `sudo` or as root will cause file ownership problems (`recon/`, `data/`, Playwright browser cache) and may break tool integrations.
+
+    ```bash
+    # Correct
+    ./run.sh
+
+    # Incorrect — do not do this
+    sudo ./run.sh
+    ```
+  </Accordion>
+
+  <Accordion title="Python venv must be activated correctly">
+    The app and its tools depend on packages installed in the project virtualenv. If you see import errors or missing module warnings:
+
+    ```bash
+    source venv/bin/activate
+    python -c "import fastapi; import impacket; import aiohttp; print('OK')"
+    ```
+
+    `run.sh` activates the venv automatically. If you are running `etherreaper.py` directly, activate the venv first.
+  </Accordion>
+
+  <Accordion title="Kerberos: use DC hostname, not IP">
+    When authenticating with a ccache file (`--use-kcache`), all netexec commands must target the **DC hostname** rather than its IP address. Kerberos tickets are issued for a specific service principal (SPN) bound to the hostname. Using an IP will cause authentication failures.
+
+    Ensure the **DC Hostname** field in the Network Info bar is set correctly. EtherReaper uses this value automatically when Kerberos auth is selected.
+
+    <Tip>
+      If DNS resolution is not available, add the DC hostname to `/etc/hosts`:
+      ```bash
+      echo "10.10.10.10  dc01.corp.local" | sudo tee -a /etc/hosts
+      ```
+    </Tip>
+  </Accordion>
+
+</AccordionGroup>

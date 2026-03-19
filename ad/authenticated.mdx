@@ -1,0 +1,256 @@
+---
+title: 'AD authenticated'
+description: 'Active Directory enumeration and attack techniques that require domain credentials — supports both NTLM and Kerberos ccache authentication.'
+---
+
+All authenticated AD scans accept either NTLM credentials (username + password or NTLM hash) or a Kerberos ccache file. Every scan modal has a **Saved Credentials** dropdown that auto-populates from the credentials database.
+
+<Info>
+When using a Kerberos ccache (`--use-kcache`), always target the **DC hostname**, not the DC IP address. Kerberos requires a valid hostname for ticket validation. EtherReaper auto-fills this from Network Info.
+</Info>
+
+## Authentication methods
+
+<AccordionGroup>
+  <Accordion title="NTLM credentials">
+    Provide a username and password. If the password is an NTLM hash (format `LM:NT` or `:<NT>`), EtherReaper passes `-H` instead of `-p` to netexec automatically via the `get_auth_flag` helper.
+  </Accordion>
+  <Accordion title="Kerberos (-k flag)">
+    Check the **Kerberos** option when entering NTLM credentials. EtherReaper appends `-k` to the netexec command and syncs clock time with the DC before the scan (requires sudo password for `ntpdate`).
+  </Accordion>
+  <Accordion title="Kerberos ccache (--use-kcache)">
+    Select a ccache file from `recon/ccache/`. EtherReaper parses the ccache to extract the username and domain, syncs time with the DC, sets `KRB5CCNAME`, and passes `--use-kcache` to netexec. Place ccache files in `recon/ccache/` before scanning.
+  </Accordion>
+</AccordionGroup>
+
+## Kerberoast
+
+Requests TGS (service) tickets for all accounts with a Service Principal Name (SPN) set. The encrypted ticket can be cracked offline to recover the service account password.
+
+**Endpoint:** `POST /api/kerberoast/run`
+
+**Under the hood:** Runs `netexec ldap <dc_ip> -u <user> -p <pass> -d <domain> --kerberoasting <output_file>`. Hashes are automatically parsed by `parse_kerberoast_hashes` and stored in the credentials database.
+
+**Request body:**
+
+```json
+{
+  "username": "jdoe",
+  "password": "Password123",
+  "domain": "corp.local",
+  "use_kerberos": false,
+  "use_kcache": false
+}
+```
+
+**Output file:** `recon/kerberoasting.txt`
+
+**Hash format:** Hashes are stored in hashcat format (`$krb5tgs$23$...`) in the credentials database with source `kerberoast`.
+
+<Tip>
+Crack with: `hashcat -m 13100 recon/kerberoasting.txt /path/to/wordlist.txt`
+</Tip>
+
+## AS-REP Roast (authenticated)
+
+Enumerates accounts with Kerberos pre-authentication disabled using domain credentials. The authenticated version is more reliable than unauthenticated AS-REP Roast because you can specifically query LDAP for accounts with the `DONT_REQ_PREAUTH` flag.
+
+**Endpoint:** `POST /api/asreproast/run`
+
+**Under the hood:** Runs `netexec ldap <dc_ip> -u <user> -p <pass> -d <domain> --asreproast <output_file>`. Hashes are parsed by `parse_asreproast_hashes` and stored in the credentials database.
+
+**Request body:**
+
+```json
+{
+  "username": "jdoe",
+  "password": "Password123",
+  "domain": "corp.local",
+  "use_kerberos": false,
+  "use_kcache": false
+}
+```
+
+**Output file:** `recon/asreproasting.txt`
+
+**Hash format:** Stored in hashcat format (`$krb5asrep$23$...`) in credentials database with source `asreproast`.
+
+## GMSA passwords
+
+Reads Group Managed Service Account (gMSA) passwords. Accounts granted permission to retrieve the gMSA password can read it via LDAP. The recovered NTLM hash is saved directly to the credentials database.
+
+**Endpoint:** `POST /api/gmsa/run`
+
+**Under the hood:** Runs `netexec ldap <target> -u <user> -p <pass> -d <domain> --gmsa`. Parsed by `parse_gmsa_passwords` which stores found hashes in the credentials database.
+
+**Request body:**
+
+```json
+{
+  "username": "svc-account",
+  "password": "Password123",
+  "domain": "corp.local",
+  "use_kerberos": false,
+  "use_kcache": false
+}
+```
+
+Target (DC IP) and domain are auto-filled from Network Info if not provided.
+
+**Output file:** `recon/gmsa_passwords.txt`
+
+<Note>
+GMSA extraction has a 10-second timeout on the netexec process due to known ASN.1 parsing issues in some environments. If it times out, retry — the underlying gMSA data is often still recoverable.
+</Note>
+
+## Pre2K computers
+
+Finds computer accounts created with Pre-Windows 2000 compatibility enabled. These accounts default to a predictable password (the first 14 characters of the hostname, lowercased). If the password was never changed, it can be used to obtain a TGT.
+
+**Endpoint:** `POST /api/pre2k/run`
+
+**Under the hood:** Runs `netexec ldap <dc_ip> -u <user> -p <pass> -d <domain> -M pre2k`. The module attempts authentication with the default password for each discovered pre-2000 account.
+
+**Request body:**
+
+```json
+{
+  "username": "jdoe",
+  "password": "Password123",
+  "domain": "corp.local",
+  "use_kerberos": false,
+  "use_kcache": false
+}
+```
+
+**Output file:** `recon/pre2k.txt`
+
+**ccache auto-copy:** If netexec's pre2k module obtains TGTs, ccache files are automatically copied from `~/.nxc/modules/pre2k/ccache/` into `recon/ccache/` and become available in the Kerberos ccache dropdown.
+
+The response includes:
+- `computers` — list of discovered pre-created computer accounts
+- `tgts` — accounts for which TGTs were obtained
+- `ccache_count` — number of ccache files copied to `recon/ccache/`
+
+## Shares
+
+Enumerates SMB shares on a target with optional READ/WRITE access filtering.
+
+**Endpoint:** `POST /api/shares/run`
+
+**Under the hood:** Runs `netexec smb <target> -u <user> -p <pass> -d <domain> --shares [READ] [WRITE]`.
+
+**Request body:**
+
+```json
+{
+  "target": "192.168.1.10",
+  "username": "jdoe",
+  "password": "Password123",
+  "domain": "corp.local",
+  "read": true,
+  "write": false,
+  "use_kcache": false
+}
+```
+
+| Field | Description |
+|---|---|
+| `target` | Target IP (defaults to DC IP from Network Info) |
+| `read` | Filter for shares with READ access |
+| `write` | Filter for shares with WRITE access |
+
+If neither `read` nor `write` is set, all shares are returned without access filtering.
+
+**Output file:** `recon/shares-<target>.txt`
+
+## Delegation
+
+Enumerates Kerberos delegation configurations in the domain — unconstrained, constrained, and resource-based constrained delegation (RBCD).
+
+**Run scan:** `POST /api/domain-info/delegation/run`
+
+**Under the hood:** Runs `netexec ldap <dc_ip> -d <domain> -u <user> -p <pass> --find-delegation`. Results are parsed and stored in the `delegation` table.
+
+**Get results:** `GET /api/domain-info/delegation/data`
+
+**Request body:**
+
+```json
+{
+  "username": "jdoe",
+  "password": "Password123",
+  "domain": "corp.local",
+  "use_kerberos": false,
+  "use_kcache": false
+}
+```
+
+**Fields stored per delegation entry:** `domain`, `account_name`, `account_type`, `delegation_type`, `delegation_rights_to`.
+
+<Tip>
+Accounts with unconstrained delegation are high-value targets. If you can compromise them, you can capture TGTs of any user who authenticates to that machine.
+</Tip>
+
+## Domain info
+
+Collects DC details, Machine Account Quota (MAQ), password policy, domain SID, and trust relationships in a single scan. Runs four netexec commands in parallel: `--dc-list`, `--pass-pol`, `-M maq`, and `--get-sid`.
+
+**Run scan:** `POST /api/domain-info/run`
+
+**Get results:** `GET /api/domain-info`
+
+**Request body:**
+
+```json
+{
+  "target": "192.168.1.10",
+  "username": "jdoe",
+  "password": "Password123",
+  "domain": "corp.local",
+  "use_kerberos": false,
+  "use_kcache": false
+}
+```
+
+The scan runs in the background and returns immediately with a `scan_id`. Use `GET /api/scan-status/{scan_id}` to check progress.
+
+**Data stored:**
+- `domain_info` table: DC hostname, DC IP, domain, MAQ, domain SID
+- `password_policy` table: min length, history, lockout threshold, complexity flags
+- `domain_trusts` table: trusted domains discovered from DC list output
+
+## SCCM
+
+Discovers SCCM/MECM (Microsoft Endpoint Configuration Manager) infrastructure by querying LDAP for management points, site servers, and associated objects.
+
+**Run scan:** `POST /api/domain-info/sccm/run`
+
+**Get results:** `GET /api/domain-info/sccm/data`
+
+**Under the hood:** Runs `netexec ldap <dc_ip> -d <domain> -u <user> -p <pass> -M sccm`.
+
+**Request body:**
+
+```json
+{
+  "target": "192.168.1.10",
+  "username": "jdoe",
+  "password": "Password123",
+  "domain": "corp.local",
+  "use_kerberos": false,
+  "use_kcache": false
+}
+```
+
+**Data stored:** `sccm_info`, `sccm_site_servers`, `sccm_management_points`, and `sccm_objects` (users, computers, groups) tables.
+
+## Saved credentials dropdown
+
+Every authenticated scan modal includes a **Saved Credentials** dropdown. It pulls all entries from the credentials database, allowing you to select previously captured credentials without re-typing them. Credentials are sourced from:
+
+- `netexec(SMB)` — credentials captured via SMB
+- `netexec(LDAP)` — credentials captured via LDAP  
+- `netexec(LSA)` — credentials extracted via LSA
+- `manual` — credentials entered manually
+- `kerberoast`, `asreproast`, `certipy-ESC1` — hashes captured by attack modules

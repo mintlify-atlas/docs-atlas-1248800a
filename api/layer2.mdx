@@ -1,0 +1,412 @@
+---
+title: "Layer 2 Tools"
+description: "API endpoints for long-running Layer 2 attack tools: Responder (LLMNR/NBT-NS poisoning), mitm6 (IPv6 DHCPv6 spoofing), and ASRepCatcher (AS-REP relay/listen)."
+---
+
+Layer 2 tools run as persistent background processes until explicitly stopped. Each tool has four operations:
+- **Start** — launch the process with sudo, log it to scan history, begin output monitoring.
+- **Stop** — terminate the process with `pkill`, update scan history.
+- **Output** — read the output file at a given byte offset for incremental polling (avoids re-reading from the start).
+- **Status** — check whether the process is running and which interface it is bound to.
+
+All three tools require a sudo password at start time because they bind to raw network interfaces.
+
+---
+
+## Responder
+
+Responder poisons LLMNR/NBT-NS/mDNS queries and captures NTLM hashes and cleartext credentials. Captured credentials are automatically parsed and stored in the credentials database.
+
+### POST /api/responder/start
+
+Starts Responder with the given interface and options.
+
+```bash
+curl -X POST http://localhost:8000/api/responder/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "interface": "tun0",
+    "options": ["-wrf"],
+    "sudo_password": "kali"
+  }'
+```
+
+<ParamField body="interface" type="string" required>
+  Network interface name to bind Responder to (e.g. `tun0`, `eth0`).
+</ParamField>
+
+<ParamField body="options" type="array">
+  Array of additional Responder flags (e.g. `["-wrf"]` for WPAD + fingerprinting). Each flag is a separate string element.
+</ParamField>
+
+<ParamField body="sudo_password" type="string" required>
+  Sudo password for privilege escalation.
+</ParamField>
+
+**Response:**
+
+<ResponseField name="status" type="string">`"success"` on launch.</ResponseField>
+<ResponseField name="process_id" type="integer">OS PID of the Responder process.</ResponseField>
+<ResponseField name="output_file" type="string">Basename of the output log file in `recon/` (e.g. `responder_20240115_143200.txt`).</ResponseField>
+<ResponseField name="command" type="string">The full sudo command executed.</ResponseField>
+
+```json
+{
+  "status": "success",
+  "process_id": 12345,
+  "output_file": "responder_20240115_143200.txt",
+  "command": "sudo responder -I tun0 -wrf"
+}
+```
+
+---
+
+### POST /api/responder/stop
+
+Terminates the Responder process.
+
+<ParamField body="process_id" type="integer" required>
+  PID returned by `/api/responder/start`.
+</ParamField>
+
+<ParamField body="sudo_password" type="string" required>
+  Sudo password for the `pkill` command.
+</ParamField>
+
+**Response:** `{"status": "success", "message": "Responder stopped"}`
+
+---
+
+### GET /api/responder/output
+
+Returns output from the Responder log file starting at a byte offset. Call repeatedly with increasing offsets to implement live streaming.
+
+```bash
+curl "http://localhost:8000/api/responder/output?file=responder_20240115_143200.txt&offset=0"
+```
+
+<ParamField query="file" type="string" required>
+  Filename in `recon/` (basename only, as returned by the start endpoint).
+</ParamField>
+
+<ParamField query="offset" type="integer">
+  Byte offset to start reading from. Defaults to `0`. Use the `file_size` from the previous response as the next offset.
+</ParamField>
+
+**Response:**
+
+<ResponseField name="status" type="string">`"success"`.</ResponseField>
+<ResponseField name="content" type="string">New output since the last offset. Empty string if no new data.</ResponseField>
+<ResponseField name="file_size" type="integer">Current total file size in bytes. Use as the next `offset` value.</ResponseField>
+
+---
+
+### GET /api/responder/status
+
+Returns the list of currently running Responder processes.
+
+```bash
+curl http://localhost:8000/api/responder/status
+```
+
+**Response:**
+
+<ResponseField name="status" type="string">`"success"`.</ResponseField>
+<ResponseField name="running" type="boolean">`true` if at least one Responder process is active.</ResponseField>
+<ResponseField name="processes" type="array">
+  Array of process info objects.
+
+  <Expandable title="Process info">
+    <ResponseField name="process_id" type="integer">OS PID.</ResponseField>
+    <ResponseField name="interface" type="string">Network interface.</ResponseField>
+    <ResponseField name="output_file" type="string">Output log basename.</ResponseField>
+    <ResponseField name="started_at" type="string">ISO 8601 start timestamp.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+### GET /api/responder/config
+
+Reads and parses the Responder configuration file (typically `/usr/share/responder/Responder.conf`).
+
+```bash
+curl "http://localhost:8000/api/responder/config?path=/usr/share/responder/Responder.conf"
+```
+
+<ParamField query="path" type="string" required>
+  Absolute path to `Responder.conf`.
+</ParamField>
+
+**Response:**
+
+<ResponseField name="status" type="string">`"success"`.</ResponseField>
+<ResponseField name="config" type="object">
+  Parsed config as a nested object: `{"SectionName": {"Key": "Value", ...}}`.
+  Mirrors the INI-style structure of Responder.conf with sections like `Responder Core`, `Servers`, `HTTP Options`, etc.
+</ResponseField>
+<ResponseField name="path" type="string">The config file path that was read.</ResponseField>
+
+```json
+{
+  "status": "success",
+  "config": {
+    "Responder Core": { "Responder": "On", "NBTNS": "On", "LLMNR": "On" },
+    "HTTP Options": { "HTTP": "On" },
+    "SMB Options": { "SMB": "On" }
+  },
+  "path": "/usr/share/responder/Responder.conf"
+}
+```
+
+---
+
+### POST /api/responder/config
+
+Writes an updated Responder configuration. Uses sudo to overwrite the config file.
+
+```bash
+curl -X POST http://localhost:8000/api/responder/config \
+  -H "Content-Type: application/json" \
+  -d '{
+    "path": "/usr/share/responder/Responder.conf",
+    "config": {"Responder Core": {"LLMNR": "On", "NBTNS": "Off"}},
+    "sudo_password": "kali"
+  }'
+```
+
+<ParamField body="path" type="string" required>
+  Absolute path to `Responder.conf`.
+</ParamField>
+
+<ParamField body="config" type="object" required>
+  Full config as a nested object matching the structure returned by `GET /api/responder/config`.
+</ParamField>
+
+<ParamField body="sudo_password" type="string" required>
+  Sudo password for writing to the system config file.
+</ParamField>
+
+**Response:** `{"status": "success"}`
+
+---
+
+## mitm6
+
+mitm6 performs IPv6 DHCPv6 spoofing to intercept DNS queries and relay credentials to LDAP/SMBv2.
+
+### POST /api/mitm6/start
+
+Starts mitm6 on the given interface.
+
+```bash
+curl -X POST http://localhost:8000/api/mitm6/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "interface": "eth0",
+    "options": ["-d", "corp.local"],
+    "sudo_password": "kali"
+  }'
+```
+
+<ParamField body="interface" type="string" required>
+  Network interface (e.g. `eth0`).
+</ParamField>
+
+<ParamField body="options" type="array">
+  Additional mitm6 flags (e.g. `["-d", "corp.local"]` to restrict to a specific domain).
+</ParamField>
+
+<ParamField body="sudo_password" type="string" required>
+  Sudo password.
+</ParamField>
+
+**Response:**
+
+<ResponseField name="status" type="string">`"success"`.</ResponseField>
+<ResponseField name="process_id" type="integer">OS PID.</ResponseField>
+<ResponseField name="output_file" type="string">Log file basename in `recon/`.</ResponseField>
+<ResponseField name="command" type="string">Command executed.</ResponseField>
+
+---
+
+### POST /api/mitm6/stop
+
+Terminates the mitm6 process.
+
+<ParamField body="process_id" type="integer" required>
+  PID returned by `/api/mitm6/start`.
+</ParamField>
+
+<ParamField body="sudo_password" type="string" required>
+  Sudo password for `pkill`.
+</ParamField>
+
+**Response:** `{"status": "success", "message": "mitm6 stopped"}`
+
+---
+
+### GET /api/mitm6/output
+
+Returns mitm6 log output starting at a byte offset. Same incremental polling pattern as Responder.
+
+```bash
+curl "http://localhost:8000/api/mitm6/output?file=mitm6_20240115_143200.txt&offset=0"
+```
+
+<ParamField query="file" type="string" required>
+  Log file basename.
+</ParamField>
+
+<ParamField query="offset" type="integer">
+  Byte offset. Defaults to `0`.
+</ParamField>
+
+**Response:**
+
+<ResponseField name="status" type="string">`"success"`.</ResponseField>
+<ResponseField name="content" type="string">New output since the offset.</ResponseField>
+<ResponseField name="file_size" type="integer">Current file size in bytes.</ResponseField>
+
+---
+
+### GET /api/mitm6/status
+
+Returns currently running mitm6 processes.
+
+```bash
+curl http://localhost:8000/api/mitm6/status
+```
+
+**Response:**
+
+<ResponseField name="running" type="boolean">`true` if any mitm6 process is active.</ResponseField>
+<ResponseField name="processes" type="array">
+  Array of process info objects.
+
+  <Expandable title="Process info">
+    <ResponseField name="process_id" type="integer">OS PID.</ResponseField>
+    <ResponseField name="interface" type="string">Bound interface.</ResponseField>
+    <ResponseField name="output_file" type="string">Log file basename.</ResponseField>
+    <ResponseField name="started_at" type="string">ISO 8601 start timestamp.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## ASRepCatcher
+
+ASRepCatcher intercepts Kerberos AS-REQ/AS-REP exchanges. Supports two modes:
+- **relay** — relay AS-REP hashes to capture and forward authentication.
+- **listen** — passive mode, capture AS-REP hashes from network traffic.
+
+### POST /api/asrepcatcher/start
+
+Starts ASRepCatcher in the specified mode.
+
+```bash
+curl -X POST http://localhost:8000/api/asrepcatcher/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "interface": "eth0",
+    "mode": "relay",
+    "sudo_password": "kali"
+  }'
+```
+
+<ParamField body="interface" type="string">
+  Network interface. Optional; defaults to the system's primary interface.
+</ParamField>
+
+<ParamField body="mode" type="string">
+  Operation mode: `"relay"` (default) or `"listen"`.
+</ParamField>
+
+<ParamField body="options" type="array">
+  Additional ASRepCatcher flags as an array of strings.
+</ParamField>
+
+<ParamField body="sudo_password" type="string" required>
+  Sudo password. ASRepCatcher requires root to bind to the network.
+</ParamField>
+
+**Response:**
+
+<ResponseField name="status" type="string">`"success"` on launch.</ResponseField>
+<ResponseField name="process_id" type="integer">OS PID.</ResponseField>
+<ResponseField name="output_file" type="string">Log file basename in `recon/`.</ResponseField>
+<ResponseField name="command" type="string">Command executed.</ResponseField>
+
+```json
+{
+  "status": "success",
+  "process_id": 13579,
+  "output_file": "asrepcatcher_20240115_143200.txt",
+  "command": "sudo /home/kali/etherreaper/ASRepCatcher/ASRepCatcher-venv/bin/ASRepCatcher relay"
+}
+```
+
+---
+
+### POST /api/asrepcatcher/stop
+
+Terminates the ASRepCatcher process.
+
+<ParamField body="process_id" type="integer" required>
+  PID returned by `/api/asrepcatcher/start`.
+</ParamField>
+
+<ParamField body="sudo_password" type="string" required>
+  Sudo password for `pkill`.
+</ParamField>
+
+**Response:** `{"status": "success", "message": "ASRepCatcher stopped"}`
+
+---
+
+### GET /api/asrepcatcher/output
+
+Returns ASRepCatcher log output from the given byte offset.
+
+```bash
+curl "http://localhost:8000/api/asrepcatcher/output?file=asrepcatcher_20240115_143200.txt&offset=0"
+```
+
+<ParamField query="file" type="string" required>
+  Log file basename in `recon/`.
+</ParamField>
+
+<ParamField query="offset" type="integer">
+  Byte offset. Defaults to `0`.
+</ParamField>
+
+**Response:**
+
+<ResponseField name="status" type="string">`"success"`.</ResponseField>
+<ResponseField name="content" type="string">New output since the offset.</ResponseField>
+<ResponseField name="file_size" type="integer">Current file size in bytes.</ResponseField>
+
+---
+
+### GET /api/asrepcatcher/status
+
+Returns currently running ASRepCatcher processes.
+
+```bash
+curl http://localhost:8000/api/asrepcatcher/status
+```
+
+**Response:**
+
+<ResponseField name="running" type="boolean">`true` if any ASRepCatcher process is active.</ResponseField>
+<ResponseField name="processes" type="array">
+  Array of process info objects.
+
+  <Expandable title="Process info">
+    <ResponseField name="process_id" type="integer">OS PID.</ResponseField>
+    <ResponseField name="interface" type="string">Bound interface.</ResponseField>
+    <ResponseField name="mode" type="string">`"relay"` or `"listen"`.</ResponseField>
+    <ResponseField name="output_file" type="string">Log file basename.</ResponseField>
+    <ResponseField name="started_at" type="string">ISO 8601 start timestamp.</ResponseField>
+  </Expandable>
+</ResponseField>

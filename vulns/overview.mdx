@@ -1,0 +1,65 @@
+---
+title: Vulnerability Checks
+description: All vulnerability checks available in EtherReaper — detection and exploitation of common Windows and Active Directory weaknesses via the VULNERABILITIES panel.
+---
+
+EtherReaper bundles eight vulnerability checks and payload generators into the **VULNERABILITIES** panel. Each check is backed by a dedicated FastAPI endpoint and stores its result in **DATA → Scan History**.
+
+<Warning>
+  All checks are for authorized assessments and CTF environments only. Several checks are destructive or leave forensic artifacts on the target system.
+</Warning>
+
+## Available checks
+
+<CardGroup cols={2}>
+  <Card title="PrintNightmare" icon="print" href="/vulns/printnightmare">
+    **CVE-2021-1675** — RCE via the Windows Print Spooler service. Exploits the `RpcAddPrinterDriverEx` call to load an arbitrary DLL as SYSTEM. Runs unauthenticated against the target. Part of the shared **VULNERABILITIES → Vuln Checks** panel alongside SMBGhost, MS17-010, noPAC, and NTLM Reflection.
+  </Card>
+  <Card title="SMBGhost" icon="ghost" href="/vulns/printnightmare">
+    **CVE-2020-1080** — Remote code execution via a buffer overflow in the SMBv3 compression decompression routine (`srv2.sys`). Unauthenticated check against SMBv3 targets running Windows 10 1903/1909 and Server 2019. Run via the **Vuln Checks** panel.
+  </Card>
+  <Card title="MS17-010 (EternalBlue)" icon="skull" href="/vulns/printnightmare">
+    **EternalBlue** — SMBv1 exploitation affecting pre-patched Windows 7, Server 2008, and earlier. Commonly used for lateral movement. Unauthenticated detection via the `ms17-010` NetExec module. Run via the **Vuln Checks** panel.
+  </Card>
+  <Card title="noPAC" icon="id-card" href="/vulns/printnightmare">
+    **CVE-2021-42287 / 42278** — Domain privilege escalation by exploiting machine account name collision and the `sAMAccountName` spoofing technique to obtain a TGT as a domain controller. Requires domain credentials. Run via the **Vuln Checks** panel.
+  </Card>
+  <Card title="NTLM Reflection" icon="arrows-left-right" href="/vulns/printnightmare">
+    Stages an NTLM relay attack by checking whether the target host is vulnerable to NTLM reflection. Requires credentials. Run via the **Vuln Checks** panel.
+  </Card>
+  <Card title="Coerce" icon="magnet" href="/vulns/coerce">
+    Forces Windows hosts to authenticate to your listener using multiple methods: PetitPotam, PrintSpooler, DFSCoerce, and others via the `coerce_plus` NetExec module. Captures NTLMv2 hashes when paired with Responder.
+  </Card>
+  <Card title="MasterBaiter" icon="fish" href="/vulns/masterBaiter">
+    Generates malicious payload files (`.lnk`, `.library-ms`, `.scf`) that trigger automatic Windows NTLM authentication when a victim browses a share or opens the file. Output to `recon/loads/` as a downloadable gallery.
+  </Card>
+  <Card title="Zerologon" icon="bolt" href="/vulns/zerologon">
+    **CVE-2020-1472** — Unauthenticated DC authentication bypass by exploiting a cryptographic flaw in MS-NRPC. Resets the DC machine account password to empty. Destructive — use only in authorized CTF or lab environments.
+  </Card>
+</CardGroup>
+
+## Credential and module requirements
+
+| Check | UI panel | Credentials required | CVE |
+|---|---|---|---|
+| PrintNightmare | VULNERABILITIES → Vuln Checks | No | CVE-2021-1675 |
+| SMBGhost | VULNERABILITIES → Vuln Checks | No | CVE-2020-1080 |
+| MS17-010 | VULNERABILITIES → Vuln Checks | No | — |
+| noPAC | VULNERABILITIES → Vuln Checks | Yes | CVE-2021-42287/42278 |
+| NTLM Reflection | VULNERABILITIES → Vuln Checks | Yes | — |
+| Coerce | VULNERABILITIES → Coerce | Optional | — |
+| MasterBaiter | VULNERABILITIES → MasterBaiter | No | — |
+| Zerologon | AD Unauthenticated | No | CVE-2020-1472 |
+
+## Output and scan history
+
+Every check records a row in the `scans` table with `scan_type`, `target`, `status`, `output_file`, `created_at`, and `completed_at`. Results are accessible at **DATA → Scan History** and link directly to the output file in `recon/`.
+
+Output file naming follows a consistent pattern:
+
+```
+recon/vuln-<module>-<target>.txt       # Vuln Checks (printnightmare, smbghost, ms17-010, nopac, ntlm_reflection)
+recon/zerologon-<target>.txt           # Zerologon
+recon/coerce_<target>_<timestamp>.txt  # Coerce
+recon/loads/<filename>.<ext>           # MasterBaiter payloads
+```

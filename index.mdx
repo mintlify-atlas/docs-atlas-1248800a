@@ -1,97 +1,81 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "EtherReaper"
+description: "A web-based Active Directory penetration testing framework. Run scans, capture credentials, visualize attack paths, and manage recon data from a browser — no CLI juggling required."
 ---
 
-## Setting up
+<Warning>
+  **Authorized use only.** EtherReaper is designed for professional security assessments and CTF competitions where you have explicit written permission to test the target environment.
+</Warning>
 
-Get your documentation site up and running in minutes.
+## What is EtherReaper?
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+EtherReaper wraps the most common internal network and Active Directory attack toolchain into a single persistent web interface. All scan output is logged, stored in SQLite, and viewable after the fact. Credentials captured across sessions are deduplicated and automatically available as a dropdown when running authenticated scans.
 
-## Make it yours
+**Stack:** FastAPI + Vanilla JS + SQLite. No framework overhead, no containers required.
 
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Set up EtherReaper on Kali Linux with a single setup script
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Configure your environment and run your first scan in minutes
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand how EtherReaper's components work together
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore the full FastAPI backend REST interface
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Core capabilities
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Network Reconnaissance" icon="radar" href="/recon/nmap">
+    Masscan, Nmap, Nuclei, web screenshots with tech detection, and SMB signing checks
+  </Card>
+  <Card title="Layer 2 Attacks" icon="network-wired" href="/layer2/responder">
+    Responder, mitm6, and ASRepCatcher with live output streaming
+  </Card>
+  <Card title="Vulnerability Checks" icon="shield-halved" href="/vulns/overview">
+    PrintNightmare, SMBGhost, EternalBlue, noPAC, Zerologon, Coerce, and MasterBaiter
+  </Card>
+  <Card title="Active Directory" icon="users" href="/ad/authenticated">
+    BloodHound, Kerberoast, ADCS ESC1–ESC8+, GMSA, Pre2K, Delegation, and more
+  </Card>
+  <Card title="Credential Management" icon="key" href="/data/credentials">
+    Persistent credential store with hash calculator and NTLM/Kerberos key derivation
+  </Card>
+  <Card title="Kerberos Support" icon="ticket" href="/concepts/kerberos-auth">
+    Full ccache-based authentication with automatic clock synchronization
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Key workflows
 
-## Need inspiration?
+<Steps>
+  <Step title="Install and configure">
+    Run `sudo ./setup.sh` once, then `./run.sh` as your regular user. Open `http://localhost:8000`.
+  </Step>
+  <Step title="Set up network info">
+    Fill in the **Network Info** bar with your IP, domain, DC hostname, and DC IP.
+  </Step>
+  <Step title="Define your scope">
+    Add target IPs, CIDRs, or ranges via **DATA → Scope**.
+  </Step>
+  <Step title="Enumerate and attack">
+    Run Nmap to populate the hosts database, then work through recon, Layer 2, vulnerabilities, and AD attacks.
+  </Step>
+  <Step title="Collect and review data">
+    All credentials, scan results, and discovered hosts are persisted in SQLite and viewable from the browser at any time.
+  </Step>
+</Steps>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+## Why EtherReaper?
+
+Traditional penetration testing requires juggling dozens of terminal windows, manually managing output files, and context-switching between tools. EtherReaper solves this by:
+
+- **Centralizing output** — every tool execution is logged with timestamps, output files, and status
+- **Persisting credentials** — captured hashes and passwords are deduplicated and immediately available for follow-on attacks
+- **Automating tedious steps** — ADCS ESC1 chains, ccache acquisition, and hash parsing happen automatically
+- **Working inside VPNs** — web screenshots route through aiohttp so Chromium reaches HTB/OSCP lab targets without `/etc/hosts` entries

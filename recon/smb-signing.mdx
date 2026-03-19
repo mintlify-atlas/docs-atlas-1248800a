@@ -1,0 +1,124 @@
+---
+title: SMB signing check
+description: Identify hosts with SMB signing disabled — the prerequisite list for NTLM relay attacks.
+---
+
+SMB signing is a security feature that cryptographically signs SMB traffic to prevent tampering and relay attacks. When a host has SMB signing **disabled**, its authentication sessions can be relayed to other services using tools like Responder and ntlmrelayx. The SMB Signing Check scans your scope and produces a relay target list of hosts where signing is absent.
+
+## Why SMB signing matters
+
+In an NTLM relay attack:
+
+1. You coerce or wait for a victim machine to authenticate to your listener (Responder, mitm6)
+2. You relay that authentication to another host
+3. The relay succeeds only if the **destination** host has SMB signing disabled
+
+Running this check across your scope gives you a definitive list of hosts that can serve as relay destinations, which directly feeds into Responder and ntlmrelayx attack planning.
+
+## Access points
+
+The SMB signing check is available from two places:
+
+- **NETWORK** section — run independently as part of network reconnaissance
+- **AD Unauthenticated → SMB Signing** — accessible without credentials as part of unauthenticated AD checks
+
+## Endpoints
+
+Two API endpoints perform SMB signing checks. Both use `netexec smb --gen-relay-list` under the hood.
+
+### NETWORK section endpoint
+
+```http
+POST /api/smb-signing/scan
+Content-Type: application/json
+
+{
+  "target": "10.10.10.0/24"
+}
+```
+
+This endpoint runs synchronously (waits for completion, up to 5 minutes) and returns the results immediately:
+
+```json
+{
+  "status": "success",
+  "message": "SMB signing scan completed - 3 host(s) without signing",
+  "vulnerable_count": 3,
+  "total_hosts": 12,
+  "command": "netexec smb 10.10.10.0/24 --gen-relay-list smb_relay.txt"
+}
+```
+
+### AD Unauthenticated endpoint
+
+```http
+POST /api/smbsigning/run
+Content-Type: application/json
+
+{
+  "target": "10.10.10.5"
+}
+```
+
+Or with multiple targets:
+
+```http
+POST /api/smbsigning/run
+Content-Type: application/json
+
+{
+  "targets": ["10.10.10.5", "10.10.10.10", "10.10.10.15"]
+}
+```
+
+Comma-separated values in the `target` field are also accepted. When more than one target is provided, they are written to a temporary file and passed to netexec with `-iL`.
+
+## How results are stored
+
+After the scan completes, EtherReaper parses the netexec output and updates the database:
+
+- For each discovered host, the `hosts` table row is updated with:
+  - `signing` — `"enabled"` or `"disabled"`
+  - `smbv1` — whether SMBv1 is active on the host
+  - `hostname`, `domain`, `os_info` — filled in from netexec output if not already present
+- New hosts (not yet in the database) are inserted.
+
+The relay list of unsigned hosts is also written to:
+
+```
+recon/smb_relay.txt      # NETWORK endpoint
+recon/relay_list.txt     # AD Unauthenticated endpoint
+```
+
+These files contain one IP per line and can be passed directly to ntlmrelayx with `-tf`.
+
+## Viewing results
+
+After scanning, open **DATA → Hosts** and look at the **Signing** column. Hosts showing `disabled` are your relay targets.
+
+<Tip>
+Sort the Hosts table by the Signing column to group unsigned hosts at the top. These are your highest-priority targets for Responder + ntlmrelayx relay chains.
+</Tip>
+
+## No sudo required
+
+Unlike nmap and masscan, the SMB signing check runs as your regular user. `netexec` does not require raw socket access.
+
+## Relay attack workflow
+
+Once you have your list of unsigned hosts:
+
+<Steps>
+  <Step title="Start Responder or mitm6">
+    Go to **NETWORK → Responder** or **NETWORK → mitm6** to begin capturing authentication attempts via LLMNR/NBT-NS poisoning or IPv6 spoofing.
+  </Step>
+  <Step title="Run ntlmrelayx">
+    Point ntlmrelayx at the hosts in your relay list:
+    ```bash
+    ntlmrelayx.py -tf recon/relay_list.txt -smb2support
+    ```
+  </Step>
+  <Step title="Review captured credentials">
+    Relayed credentials and SAM dumps appear in **DATA → Credentials**.
+  </Step>
+</Steps>

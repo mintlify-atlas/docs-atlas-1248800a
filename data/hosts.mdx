@@ -1,0 +1,185 @@
+---
+title: 'Hosts'
+description: 'Discovered hosts with full service detail. Populated automatically by Nmap, Masscan, and netexec SMB scans. Drives web screenshot targeting and relay identification.'
+---
+
+The Hosts database contains every discovered host along with its open ports, services, OS information, MAC address, and SMB signing status. It is the primary data source for web screenshot targeting and relay attack identification.
+
+## Database schema
+
+Hosts are stored in the `hosts` table in `data/reaper.db`.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER | Primary key, auto-incremented |
+| `ip` | TEXT UNIQUE | IP address (unique constraint — one row per IP) |
+| `hostname` | TEXT | Resolved hostname |
+| `domain` | TEXT | Domain the host belongs to |
+| `os_info` | TEXT | Operating system information from Nmap |
+| `mac_address` | TEXT | MAC address |
+| `mac_vendor` | TEXT | MAC vendor from OUI lookup |
+| `signing` | TEXT | SMB signing status: `enabled` or `disabled` |
+| `smbv1` | TEXT | SMBv1 status: `enabled` or `disabled` |
+| `ports` | TEXT | Comma-separated list of open TCP port numbers |
+| `services` | TEXT | Comma-separated list of service names |
+| `discovered_at` | TIMESTAMP | When the host was last updated |
+
+Detailed per-port information is stored separately in the `scan_results` table and joined when the API returns host data.
+
+## How hosts are populated
+
+<CardGroup cols={3}>
+  <Card title="Nmap" icon="magnifying-glass">
+    Full host records including hostname, domain, OS, MAC, ports, and services. Parsed from Nmap XML output and merged with any existing row for that IP.
+  </Card>
+  <Card title="Masscan" icon="bolt">
+    IP and open port numbers only. No hostname or OS data. Useful for rapid large-range discovery.
+  </Card>
+  <Card title="netexec SMB" icon="server">
+    Populates hostname, domain, OS, SMB signing status, and SMBv1. Run automatically during SMB scanning and credential capture.
+  </Card>
+</CardGroup>
+
+When a host already exists in the database, new scan data is **merged** rather than overwriting. Ports and services lists are deduplicated and sorted numerically. Existing non-null fields are preserved if the new data does not have a value (`COALESCE(NULLIF(new, ''), existing)`).
+
+## API endpoints
+
+### List all hosts
+
+```http
+GET /api/hosts
+```
+
+Returns all hosts ordered by IP address. Each host object includes a `port_details` array joined from `scan_results`.
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "hosts": [
+    {
+      "id": 1,
+      "ip": "10.10.10.10",
+      "hostname": "DC01",
+      "domain": "corp.local",
+      "os_info": "Windows Server 2019 Standard",
+      "mac_address": "00:50:56:b9:4a:1e",
+      "mac_vendor": "VMware",
+      "signing": "enabled",
+      "smbv1": "disabled",
+      "ports": ["88", "135", "389", "445"],
+      "services": ["kerberos-sec", "msrpc", "ldap", "microsoft-ds"],
+      "discovered_at": "2024-01-15 12:34:56",
+      "port_details": [
+        { "port": 445, "protocol": "tcp", "service": "microsoft-ds", "version": "", "technology": "Windows", "status": "open" }
+      ]
+    }
+  ]
+}
+```
+
+<Note>
+The `ports` field in API responses is returned as an array of strings (split from the comma-separated database value).
+</Note>
+
+### Get hosts by type
+
+```http
+GET /api/hosts/by-type/{host_type}
+```
+
+Filters hosts by detected role based on open ports. Used internally by the web screenshot and scan targeting features.
+
+| `host_type` | Port criteria |
+|---|---|
+| `all` | All hosts regardless of ports |
+| `windows` | Ports: 88, 135, 139, 389, 445, 464, 636, 3268, 3269, 3389, 5985, 5986 |
+| `web` | Ports: 80, 443, 8080, 8081, 8082, 8443, 8444, 9443, 10443, 9090, 10000, 50660, 4743, 9582 |
+| `infrastructure` | Ports: 22, 23, 2375, 2376, 2325, 6443, 7001, 8001, 9000, 9200, 27017, 6379, 1433, 3306, 5432, 5900 |
+| `scope-unscanned` | IPs in scope that have no corresponding host record |
+
+For `host_type=web`, the response also includes a `urls` array of pre-built `scheme://ip:port` URLs derived from confirmed-open ports. HTTPS is assumed for ports 443 and 8443; HTTP for all others.
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "host_type": "web",
+  "count": 3,
+  "ips": ["10.10.10.5", "10.10.10.12", "10.10.10.20"],
+  "urls": ["http://10.10.10.5:80", "https://10.10.10.12:443", "http://10.10.10.20:8080"]
+}
+```
+
+### Delete a host
+
+```http
+DELETE /api/hosts/{host_id}
+```
+
+### Bulk delete hosts
+
+```http
+POST /api/hosts/bulk-delete
+```
+
+**Request body**
+
+```json
+{ "ids": [1, 2, 3] }
+```
+
+### Import Nmap XML
+
+```http
+POST /api/hosts/import-xml
+Content-Type: multipart/form-data
+```
+
+Parses an uploaded Nmap XML file and populates the `hosts` and `scan_results` tables. Extracts:
+
+- IP address and hostname (from `<hostnames>` or service `hostname` attribute)
+- Domain (from hostname FQDN split, or `Domain:` in Nmap `extrainfo`)
+- MAC address and vendor
+- OS information (from service `ostype` and `product` attributes)
+- All open TCP ports with service names and versions
+
+If a host already exists, ports and services are merged. Scope entries matching the IP are updated to `status = 'scanned'`.
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "hosts_added": 8,
+  "ports_added": 42,
+  "duplicates_skipped": 2
+}
+```
+
+<Tip>
+Nmap XML import is also triggered automatically when an Nmap scan completes. You only need this endpoint if importing an externally generated XML file.
+</Tip>
+
+## SMB signing and relay targeting
+
+The `signing` column is populated by netexec SMB scans. Hosts with `signing = 'disabled'` are unsigned SMB relay targets. The SMB Signing Check scan (NETWORK → SMB Signing) populates this column across all scope IPs.
+
+The Hosts table view highlights unsigned hosts so relay targets are immediately visible.
+
+## Web port detection and screenshot targeting
+
+The **Web Applications** filter in the web screenshot module uses `GET /api/hosts/by-type/web`. This endpoint checks two sources:
+
+1. **`scan_results` table** — port/status rows written by Nmap scans (`status = 'open'`)
+2. **`hosts.ports` column** — comma-separated port numbers stored at the host level
+
+Both sources are checked so that hosts added via Masscan (which only writes to `hosts.ports`) and hosts added via Nmap (which also writes to `scan_results`) are both matched.
+
+<Warning>
+If 0 hosts appear in the Web Applications database filter, run an Nmap scan first to populate port data. Masscan-only results may also appear if the Masscan output was imported.
+</Warning>
+
+For the `web` host type, the response includes ready-to-use `protocol://ip:port` URLs. The screenshot engine uses these directly, skipping any re-probe of ports that are already confirmed open.

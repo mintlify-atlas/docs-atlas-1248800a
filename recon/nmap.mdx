@@ -1,0 +1,111 @@
+---
+title: Nmap
+description: Service version detection, OS fingerprinting, and script scanning against discovered hosts.
+---
+
+Nmap is the primary service enumeration tool in EtherReaper. After a scan completes, results are parsed from the XML output and written directly into the hosts database — populating port lists, service names, hostnames, MAC addresses, and OS information without any manual import step.
+
+## Navigate to the scanner
+
+Open **NETWORK → Nmap** in the sidebar.
+
+## Scan presets
+
+Choose a preset that matches the depth of scan you need:
+
+| Preset | Nmap flags | Use case |
+|--------|-----------|----------|
+| Quick | `-T4 -F` | Fast sweep of ~100 common ports |
+| Default | `-T3 -sV` | Service version detection at moderate speed |
+| Thorough | `-T3 -sV -sC` | Service detection + default NSE scripts |
+| Aggressive | `-T4 -sV -sC` | Fast service detection + scripts |
+| Custom | User-supplied | Any flags you need |
+
+<Note>
+All presets pass `--open` so only responding hosts appear in results.
+</Note>
+
+## Port presets
+
+Select a port range to scan alongside the chosen scan preset:
+
+| Port preset | Ports covered |
+|-------------|---------------|
+| Common | `80,443,445,3389,22` |
+| Windows | `88,135,139,389,445,464,636,3268,3269,3389,5985,5986,9389` |
+| Web | `80,8080,8081,8082,443,8443,8444,9443,10443,9090,10000,50660,4743,9582` |
+| Infra | `22,2375,2376,2325,5985,5986,6443,7001,8001,8443,9000,9200,27017,6379,1433,3306,5432,5900` |
+| All | `1-1000` |
+| Custom | Manual port specification |
+
+## Sudo requirement
+
+Nmap runs with `sudo` so it can send raw packets needed for OS detection (`-O`). When you click **Start Scan**, EtherReaper prompts for your sudo password via a modal. The password is passed to `stdin` and never appears in shell history or process arguments.
+
+<Warning>
+Do not run the EtherReaper app itself as root. The sudo modal handles privilege elevation only for the nmap subprocess.
+</Warning>
+
+## Running a scan
+
+<Steps>
+  <Step title="Enter target">
+    Specify a single IP, CIDR range, or comma-separated list of IPs. Long lists (>500 characters) are written to a temporary file and passed with `-iL` to avoid shell argument length limits.
+  </Step>
+  <Step title="Choose scan and port preset">
+    Select from the preset dropdowns or choose Custom to supply your own flags.
+  </Step>
+  <Step title="Enter sudo password">
+    The sudo modal appears when you start the scan. Enter your password. You can optionally save it for the session so it is reused for subsequent sudo-requiring tools.
+  </Step>
+  <Step title="Wait for completion">
+    Nmap runs in the background. The scan entry in **DATA → Scan History** updates from `running` to `completed` when finished.
+  </Step>
+</Steps>
+
+## Output files
+
+Nmap writes three files per scan using the `-oA` flag (all formats at once):
+
+```
+recon/nmap_<port_preset>_<YYYYMMDD_HHMMSS>.xml
+recon/nmap_<port_preset>_<YYYYMMDD_HHMMSS>.nmap
+recon/nmap_<port_preset>_<YYYYMMDD_HHMMSS>.gnmap
+```
+
+File ownership is corrected back to the operator user after the scan completes — nmap runs as root but the output files are chowned back so you can read and copy them without privilege.
+
+## How results populate the hosts database
+
+Once nmap exits, EtherReaper parses the `.xml` output and writes results to SQLite:
+
+- **`hosts` table** — one row per discovered IP. Columns updated: `hostname`, `domain`, `ports` (comma-separated port numbers), `services` (comma-separated service names), `mac_address`, `mac_vendor`, `discovered_at`. If the host already exists, port and service lists are **merged** with existing data rather than overwritten.
+- **`scan_results` table** — one row per open port per host, storing `port`, `protocol`, `service`, `version`, `technology` (product string from nmap), `status`.
+- **`scope` table** — matching entries have their `status` set to `scanned`.
+
+<Info>
+Partial XML output from interrupted scans is recoverable. If nmap was killed before writing `</nmaprun>`, EtherReaper patches the closing tag and still parses whatever hosts were discovered.
+</Info>
+
+## Importing an existing Nmap XML file
+
+If you already have an nmap XML file from a previous engagement, you can import it directly without running a new scan:
+
+```http
+POST /api/hosts/import-xml
+Content-Type: multipart/form-data
+
+xml_file=<your_nmap_output.xml>
+```
+
+The import endpoint applies the same XML parsing logic — hostname splitting, MAC extraction, domain inference from service `extrainfo`, and OS type detection — and populates the hosts and scan_results tables identically to a live scan.
+
+## Connection to Web Screenshots
+
+When you run an nmap scan with the **Web** port preset, ports `80`, `8080`, `8081`, `8082`, `443`, `8443`, `8444`, `9443`, `10443`, `9090`, `10000`, `50660`, `4743`, and `9582` are written to `hosts.ports` for each responding host.
+
+The **Web Applications** filter in **NETWORK → Web Screenshots** (and in the **Hosts** data view) queries this column to build a target list of confirmed web-accessible hosts. If the filter shows 0 results, run an nmap scan with the Web port preset first.
+
+<Tip>
+The recommended workflow is: **Masscan** (fast discovery across all ports) → **Nmap** (service detection on discovered hosts) → **Web Screenshots** (fingerprint confirmed web services).
+</Tip>

@@ -1,0 +1,98 @@
+---
+title: Zerologon
+description: CVE-2020-1472 — Unauthenticated DC authentication bypass via a cryptographic flaw in MS-NRPC. Resets the DC machine account password to empty.
+---
+
+Zerologon exploits a critical vulnerability in the Microsoft Netlogon Remote Protocol (MS-NRPC). The flaw stems from an improper use of AES-CFB8 encryption — specifically, the use of an all-zero IV — in the Netlogon authentication handshake. An attacker can send crafted `NetrServerAuthenticate3` messages that, on average, succeed within 256 attempts (often fewer), establishing an authenticated Netlogon session without any credentials.
+
+Once authenticated, the attacker can call `NetrServerPasswordSet2` to set the DC machine account password to an empty string, effectively taking over the domain controller.
+
+Navigate to **AD Unauthenticated** and select **Zerologon** to run this check.
+
+<Warning>
+  Zerologon is **destructive**. It resets the DC computer account password in Active Directory. This will break domain authentication for all domain members until the DC password is restored. Use this only in CTF environments or authorized assessments where you have explicit permission to test and are prepared to restore the account. Do not run against production systems.
+</Warning>
+
+## How the check works
+
+EtherReaper runs the Zerologon check via the `zerologon` NetExec module:
+
+```bash
+netexec smb <target> -M zerologon
+```
+
+The module attempts the authentication bypass against the target DC's Netlogon RPC service (port 445/TCP). Output is written to a timestamped file and recorded in scan history.
+
+## Request parameters
+
+The UI submits to `POST /api/zerologon/run`:
+
+```json
+{
+  "target": "10.10.10.5"
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `target` | Recommended | IP address of the domain controller. If omitted, the backend auto-populates from the `dc_ip` value in the Network Info bar. |
+
+If the Network Info bar has a DC IP configured and `target` is not provided in the request, the endpoint falls back to the stored DC IP automatically.
+
+## Running the check
+
+<Steps>
+  <Step title="Set DC IP in Network Info">
+    Confirm the DC IP is filled in the Network Info bar at the top of the page. This is used as the default target.
+  </Step>
+  <Step title="Navigate to AD Unauthenticated">
+    Open the **AD Unauthenticated** section in the sidebar and select **Zerologon**.
+  </Step>
+  <Step title="Confirm target">
+    Verify the target IP is correct. This will be the domain controller whose machine account password will be reset if the exploit succeeds.
+  </Step>
+  <Step title="Click Run">
+    The backend launches the NetExec subprocess and waits for it to complete.
+  </Step>
+  <Step title="Review output">
+    The raw NetExec output appears in the result panel. A successful exploitation shows the module confirming the password reset.
+  </Step>
+</Steps>
+
+## Output file
+
+Results are written to:
+
+```
+recon/zerologon-<target>.txt
+```
+
+The file is linked from **DATA → Scan History** for the corresponding scan entry.
+
+## Post-exploitation
+
+After a successful Zerologon, the DC machine account password is empty. From here, you can use the empty password to authenticate as the DC machine account and perform a DCSync to dump all domain hashes:
+
+```bash
+# Authenticate with the empty machine account password
+secretsdump.py -no-pass -just-dc <domain>/<DC_hostname>$@<DC_IP>
+```
+
+<Warning>
+  After dumping credentials, restore the DC machine account password as soon as possible to avoid breaking the domain. Use the Zerologon PoC's restore functionality or `secretsdump.py` to write back the original password hash.
+</Warning>
+
+## Affected systems
+
+| Windows version | Vulnerable without patch |
+|---|---|
+| Windows Server 2008 R2 | Yes |
+| Windows Server 2012 / 2012 R2 | Yes |
+| Windows Server 2016 | Yes |
+| Windows Server 2019 | Yes (before August 2020 patch) |
+
+Microsoft patched Zerologon in the August 2020 Patch Tuesday (MS20-1472). Systems patched after August 11, 2020 are not vulnerable.
+
+<Note>
+  The NetExec module reports whether the target is patched or vulnerable without actually completing the exploit if the system is patched. Review the output carefully to distinguish a detection result from a successful exploitation.
+</Note>

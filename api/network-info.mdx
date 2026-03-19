@@ -1,0 +1,337 @@
+---
+title: "Network Info"
+description: "Endpoints for managing the operator's working environment: local IP, domain, DC host/IP, external IP, authentication method, and Kerberos ccache files."
+---
+
+The network info endpoints manage the persistent session context stored in the SQLite database. All authenticated scans pull domain, DC host, and DC IP from this context automatically — you only need to set it once per engagement.
+
+---
+
+## GET /api/network-info
+
+Returns the currently stored network info record.
+
+```bash
+curl http://localhost:8000/api/network-info
+```
+
+### Response
+
+<ResponseField name="host" type="string">
+  Attacker hostname (populated from OS environment).
+</ResponseField>
+
+<ResponseField name="ip" type="string">
+  Attacker's local IP address (e.g. VPN tun0 IP).
+</ResponseField>
+
+<ResponseField name="domain" type="string">
+  Active Directory domain name (e.g. `corp.local`).
+</ResponseField>
+
+<ResponseField name="dc_host" type="string">
+  Domain controller hostname (e.g. `DC01`). Required for Kerberos authentication.
+</ResponseField>
+
+<ResponseField name="dc_ip" type="string">
+  Domain controller IP address.
+</ResponseField>
+
+<ResponseField name="ext_ip" type="string">
+  External/public IP of the attacker machine.
+</ResponseField>
+
+<ResponseField name="auth_method" type="string">
+  Detected authentication method: `NTLM`, `Kerberos`, `Kerberos+NTLM`, or `Unknown`.
+</ResponseField>
+
+<ResponseField name="requires_kerberos" type="integer">
+  `1` if the DC only accepts Kerberos, `0` otherwise.
+</ResponseField>
+
+<ResponseField name="username" type="string">
+  Operating system username of the app process owner.
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "host": "kali",
+  "ip": "10.10.14.5",
+  "domain": "corp.local",
+  "dc_host": "DC01",
+  "dc_ip": "10.10.10.1",
+  "ext_ip": "1.2.3.4",
+  "auth_method": "Kerberos+NTLM",
+  "requires_kerberos": 0,
+  "username": "kali"
+}
+```
+
+---
+
+## GET /api/network-interfaces
+
+Returns all active network interfaces with their assigned IPv4 addresses. VPN interfaces (`tun*`, `tap*`) are sorted to the top of the list.
+
+```bash
+curl http://localhost:8000/api/network-interfaces
+```
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on success.
+</ResponseField>
+
+<ResponseField name="interfaces" type="array">
+  Array of interface objects, VPN interfaces listed first.
+
+  <Expandable title="Interface object">
+    <ResponseField name="interface" type="string">
+      Interface name (e.g. `tun0`, `eth0`).
+    </ResponseField>
+    <ResponseField name="ip" type="string">
+      IPv4 address assigned to this interface.
+    </ResponseField>
+    <ResponseField name="display" type="string">
+      Human-readable label: `"10.10.14.5 (tun0)"`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "status": "success",
+  "interfaces": [
+    { "interface": "tun0", "ip": "10.10.14.5", "display": "10.10.14.5 (tun0)" },
+    { "interface": "eth0", "ip": "192.168.1.10", "display": "192.168.1.10 (eth0)" }
+  ]
+}
+```
+
+---
+
+## POST /api/network-info/update
+
+Persists the operator's network context. If `dc_ip` is provided and `auth_method` is not specified, the DC is probed automatically to detect whether it supports Kerberos, NTLM, or both.
+
+```bash
+curl -X POST http://localhost:8000/api/network-info/update \
+  -H "Content-Type: application/json" \
+  -d '{"host": "kali", "ip": "10.10.14.5", "domain": "corp.local", "dc_host": "DC01", "dc_ip": "10.10.10.1"}'
+```
+
+### Request Body
+
+<ParamField body="host" type="string">
+  Attacker hostname.
+</ParamField>
+
+<ParamField body="ip" type="string">
+  Attacker's local IP (used as listener address in coercion attacks).
+</ParamField>
+
+<ParamField body="domain" type="string">
+  Active Directory domain name.
+</ParamField>
+
+<ParamField body="dc_host" type="string">
+  Domain controller hostname. Must be the actual hostname (not IP) when using Kerberos.
+</ParamField>
+
+<ParamField body="dc_ip" type="string">
+  Domain controller IP address.
+</ParamField>
+
+<ParamField body="ext_ip" type="string">
+  External IP address of the attacker machine.
+</ParamField>
+
+<ParamField body="auth_method" type="string">
+  Explicitly set auth method (`NTLM`, `Kerberos`, `Kerberos+NTLM`). If omitted and `dc_ip` is present, the DC is probed automatically.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on success.
+</ResponseField>
+
+<ResponseField name="auth_method" type="string">
+  The auth method that was stored (auto-detected or explicitly provided).
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "status": "success",
+  "auth_method": "Kerberos+NTLM"
+}
+```
+
+---
+
+## POST /api/network-info/detect-auth
+
+Probes the given DC IP to determine whether it supports Kerberos, NTLM, or both. Updates the stored `auth_method` and `requires_kerberos` fields.
+
+```bash
+curl -X POST http://localhost:8000/api/network-info/detect-auth \
+  -H "Content-Type: application/json" \
+  -d '{"dc_ip": "10.10.10.1"}'
+```
+
+### Request Body
+
+<ParamField body="dc_ip" type="string" required>
+  IP address of the domain controller to probe.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on success.
+</ResponseField>
+
+<ResponseField name="auth_method" type="string">
+  Detected auth method: `"Kerberos"`, `"NTLM"`, `"Kerberos+NTLM"`, or `"Unknown"`.
+</ResponseField>
+
+<ResponseField name="requires_kerberos" type="boolean">
+  `true` if `auth_method` is exactly `"Kerberos"` (DC refuses NTLM).
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "status": "success",
+  "auth_method": "Kerberos+NTLM",
+  "requires_kerberos": false
+}
+```
+
+---
+
+## POST /api/kerberos/acquire-tgt
+
+Acquires a Kerberos TGT using `impacket-getTGT`. Before requesting the ticket, the system clock is synchronized with the DC using `ntpdate` (Kerberos requires time skew < 5 minutes). The resulting `.ccache` file is saved to `recon/ccache/<username>.ccache`.
+
+```bash
+curl -X POST http://localhost:8000/api/kerberos/acquire-tgt \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "corp.local",
+    "username": "administrator",
+    "password": "Password1",
+    "dc_ip": "10.10.10.1",
+    "sudo_password": "kali"
+  }'
+```
+
+### Request Body
+
+<ParamField body="domain" type="string" required>
+  Active Directory domain name.
+</ParamField>
+
+<ParamField body="username" type="string" required>
+  Account username to request the TGT for.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Account password.
+</ParamField>
+
+<ParamField body="dc_ip" type="string" required>
+  Domain controller IP used for time sync and TGT acquisition.
+</ParamField>
+
+<ParamField body="sudo_password" type="string">
+  Sudo password required to run `ntpdate` for clock sync. Optional but strongly recommended.
+</ParamField>
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on success.
+</ResponseField>
+
+<ResponseField name="ccache_path" type="string">
+  Absolute path to the saved ccache file (e.g. `/home/kali/etherreaper/recon/ccache/administrator.ccache`).
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Human-readable result summary.
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "status": "success",
+  "ccache_path": "/home/kali/etherreaper/recon/ccache/administrator.ccache",
+  "message": "TGT acquired successfully for corp.local/administrator"
+}
+```
+
+---
+
+## GET /api/ccache/list
+
+Lists all `.ccache` files in the `recon/ccache/` directory. Used by authenticated scan modals to populate the ccache file selector.
+
+```bash
+curl http://localhost:8000/api/ccache/list
+```
+
+### Response
+
+<ResponseField name="status" type="string">
+  `"success"` on success.
+</ResponseField>
+
+<ResponseField name="ccache_files" type="array">
+  Array of ccache file objects, sorted by modification time (newest first).
+
+  <Expandable title="ccache file object">
+    <ResponseField name="filename" type="string">
+      File name (e.g. `administrator.ccache`).
+    </ResponseField>
+    <ResponseField name="path" type="string">
+      Absolute path to the ccache file.
+    </ResponseField>
+    <ResponseField name="size" type="integer">
+      File size in bytes.
+    </ResponseField>
+    <ResponseField name="modified" type="string">
+      Last modified timestamp in `YYYY-MM-DD HH:MM:SS` format.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="count" type="integer">
+  Total number of ccache files found.
+</ResponseField>
+
+**Example response:**
+
+```json
+{
+  "status": "success",
+  "ccache_files": [
+    {
+      "filename": "administrator.ccache",
+      "path": "/home/kali/etherreaper/recon/ccache/administrator.ccache",
+      "size": 1024,
+      "modified": "2024-01-15 14:32:07"
+    }
+  ],
+  "count": 1
+}
+```

@@ -1,0 +1,182 @@
+---
+title: 'mitm6'
+description: 'IPv6 DHCPv6 spoofing to force Windows hosts to authenticate via IPv6, enabling credential relay to LDAP or SMB.'
+---
+
+mitm6 exploits the default Windows behavior of preferring IPv6 over IPv4. It responds to DHCPv6 requests and poisons IPv6 DNS, causing Windows hosts to use your machine as their DNS server. When those hosts attempt to authenticate to resources resolved via the spoofed DNS, their credentials can be relayed to LDAP or SMB.
+
+<Warning>
+  mitm6 requires elevated privileges. You will be prompted for your sudo password when starting the tool. Active IPv6 DHCPv6 advertisements on the network will affect all Windows hosts within broadcast range.
+</Warning>
+
+<Warning>
+  IPv6 must be enabled on the target network segment. If the environment has disabled IPv6 at the switch or host level, mitm6 will not produce results.
+</Warning>
+
+## Accessing mitm6
+
+Navigate to **LAYER2 → mitm6** in the sidebar. The panel provides interface selection, start/stop controls, and a live output terminal.
+
+---
+
+## How mitm6 works
+
+1. mitm6 listens for DHCPv6 `SOLICIT` and `REQUEST` messages on the local segment.
+2. It responds with a DHCPv6 `ADVERTISE`/`REPLY`, assigning itself as the IPv6 DNS server for the target host.
+3. When Windows resolves a hostname via the spoofed DNS server, mitm6 returns your machine's IPv6 address.
+4. Windows automatically sends NTLM authentication to that address (e.g., via WPAD, SMB auto-discovery, or triggered coercion).
+5. ntlmrelayx (run separately) receives the authentication and relays it to LDAP or SMB targets.
+
+<Note>
+  mitm6 on its own does not capture credentials — it is a network positioning tool. Pair it with ntlmrelayx to relay the authentication it generates.
+</Note>
+
+---
+
+## Starting mitm6
+
+<Steps>
+  <Step title="Select a network interface">
+    Choose the interface on the target network segment (e.g. `eth0`). This is passed as the `-i` flag to mitm6.
+  </Step>
+  <Step title="Enter your sudo password">
+    mitm6 needs raw socket access to send DHCPv6 packets. Enter your sudo password when prompted.
+  </Step>
+  <Step title="Click Start">
+    The UI calls `POST /api/mitm6/start`, which constructs the command, launches the process in the background, logs the session to scan history, and registers the PID in the `MITM6_PROCESSES` global dict.
+  </Step>
+  <Step title="Monitor live output">
+    The terminal panel streams output by polling `GET /api/mitm6/output` with a byte offset, appending new content as it arrives.
+  </Step>
+</Steps>
+
+### Start request
+
+```http
+POST /api/mitm6/start
+Content-Type: application/json
+
+{
+  "interface": "eth0",
+  "options": [],
+  "sudo_password": "<sudo password>"
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "process_id": 13579,
+  "output_file": "mitm6_20240315_150000.txt",
+  "command": "sudo mitm6 -i eth0"
+}
+```
+
+The `options` array accepts additional mitm6 flags as individual strings (e.g. `"-d"`, `"corp.local"` to restrict poisoning to a specific domain).
+
+---
+
+## Stopping mitm6
+
+Click **Stop** in the UI, or call the stop endpoint. The backend runs `sudo pkill -f 'mitm6.*<interface>'` to terminate the process and marks the scan as completed in scan history.
+
+```http
+POST /api/mitm6/stop
+Content-Type: application/json
+
+{
+  "process_id": 13579,
+  "sudo_password": "<sudo password>"
+}
+```
+
+---
+
+## Live output streaming
+
+Output is written to `recon/mitm6_<timestamp>.txt` and read incrementally:
+
+```http
+GET /api/mitm6/output?file=mitm6_20240315_150000.txt&offset=0
+```
+
+**Response fields:**
+
+| Field | Description |
+|---|---|
+| `content` | New bytes read since `offset` |
+| `file_size` | Current file size in bytes |
+
+The UI advances `offset` to `file_size` on each poll.
+
+---
+
+## Checking process status
+
+```http
+GET /api/mitm6/status
+```
+
+**Response:**
+
+```json
+{
+  "running": true,
+  "processes": [
+    {
+      "process_id": 13579,
+      "interface": "eth0",
+      "output_file": "mitm6_20240315_150000.txt",
+      "started_at": "2024-03-15T15:00:00.000000"
+    }
+  ]
+}
+```
+
+The `MITM6_PROCESSES` dict (keyed by PID) is the authoritative in-memory state. Each entry stores the process handle, output file path, interface, start time, and scan ID.
+
+---
+
+## Output file
+
+Each session writes to a timestamped file in the `recon/` directory:
+
+```
+recon/mitm6_20240315_150000.txt
+```
+
+The file is also linked from **DATA → Scan History** for the corresponding session entry.
+
+---
+
+## Typical attack chain
+
+The standard mitm6 workflow pairs with ntlmrelayx for LDAP or SMB relay:
+
+<Steps>
+  <Step title="Identify relay targets">
+    Run **NETWORK → SMB Signing Check** to find hosts with SMB signing disabled. These are valid SMB relay targets. Domain controllers are always valid LDAP relay targets.
+  </Step>
+  <Step title="Start ntlmrelayx externally">
+    From a terminal, launch ntlmrelayx targeting the hosts identified above. For LDAP relay to a DC:
+
+    ```bash
+    ntlmrelayx.py -6 -t ldaps://<DC-IP> -wh <attacker-hostname> -l /tmp/relay-output
+    ```
+  </Step>
+  <Step title="Start mitm6 from the UI">
+    Select the correct interface and start mitm6. It begins answering DHCPv6 requests and poisoning IPv6 DNS immediately.
+  </Step>
+  <Step title="Wait for authentication events">
+    Windows hosts periodically re-request WPAD configuration and refresh DNS. Within minutes, authentication requests will arrive at ntlmrelayx. Watch the mitm6 output terminal for `Sent spoofed reply` messages confirming active poisoning.
+  </Step>
+  <Step title="Stop mitm6 when done">
+    Stop mitm6 from the UI. DHCPv6 leases expire; affected hosts revert to their original DNS configuration within the lease timeout period.
+  </Step>
+</Steps>
+
+<Tip>
+  Running mitm6 with a domain restriction (e.g. `-d corp.local`) limits poisoning to DNS queries matching that domain, reducing noise and avoiding unintended disruption to non-Windows devices.
+</Tip>

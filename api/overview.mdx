@@ -1,0 +1,190 @@
+---
+title: "API Overview"
+description: "EtherReaper REST API reference — base URL, authentication, error handling, CORS, and a full endpoint index."
+---
+
+## Base URL
+
+All API endpoints are served from the FastAPI backend running locally:
+
+```
+http://localhost:8000
+```
+
+Custom ports are supported via `./run.sh --port <PORT>`.
+
+## Interactive Documentation
+
+FastAPI automatically generates two interactive API explorers:
+
+| URL | Description |
+|-----|-------------|
+| `http://localhost:8000/docs` | Swagger UI — try requests directly in browser |
+| `http://localhost:8000/redoc` | ReDoc — clean read-only reference |
+
+Both are always available and reflect the live route definitions.
+
+## Authentication
+
+There is **no API authentication**. The server binds to `localhost:8000` and relies on network-level isolation.
+
+CORS policy is fully open:
+
+```python
+allow_origins=["*"]
+allow_methods=["*"]
+allow_headers=["*"]
+```
+
+This allows the frontend and any local tooling to call the API freely.
+
+## Request / Response Format
+
+- All endpoints accept and return **JSON** (`Content-Type: application/json`).
+- Endpoints that accept file uploads use `multipart/form-data`.
+- Every response includes a `"status"` field: `"success"` or `"error"`.
+
+### Error Responses
+
+Errors follow a consistent shape across all endpoints:
+
+```json
+{
+  "status": "error",
+  "message": "Human-readable description of what went wrong"
+}
+```
+
+Standard HTTP status codes are used:
+
+| Code | Meaning |
+|------|---------|
+| `200` | Success |
+| `400` | Bad request — missing or invalid parameters |
+| `404` | Resource not found |
+| `500` | Internal server error |
+
+## API Categories
+
+### Network Info
+Store and retrieve the operator's working environment: local IP, domain, DC host/IP, external IP, and authentication method.
+
+### Scans
+Launch and manage Nmap and Masscan host/port discovery scans. Track status, kill running scans, bulk-delete history, and import results.
+
+### Credentials
+Capture, store, and export credentials from every source: Responder, netexec, LSA secrets, Kerberoast/AS-REP hashes, and manual entry.
+
+### Hosts
+Manage the discovered hosts database. Import from Nmap XML, filter by host type, bulk-delete, and retrieve port/service details.
+
+### Scope
+Define the target IP/CIDR/range list. Import from file or manual entry, track scan status per target.
+
+### Users / Groups
+Domain user and group enumeration results from RID brute, LDAP user export, and local groups.
+
+### Domain Info
+DC host/IP, MAQ, domain SID, password policy, and delegation data collected via netexec LDAP.
+
+### Vulnerabilities
+Run targeted checks: Zerologon, Coerce authentication, PrintNightmare, EternalBlue, noPAC, SMBGhost, NTLM reflection.
+
+### AD Attacks
+Authenticated AD attack chains: BloodHound collection, Kerberoasting, AS-REP roasting, ADCS enumeration and ESC1 exploitation.
+
+### Layer 2 Tools
+Long-running background processes with live output streaming: Responder, mitm6, and ASRepCatcher.
+
+---
+
+## Endpoint Quick Reference
+
+### Network Info
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/network-info` | Get stored network info |
+| `GET` | `/api/network-interfaces` | List network interfaces |
+| `POST` | `/api/network-info/update` | Update network info |
+| `POST` | `/api/network-info/detect-auth` | Detect DC auth method |
+| `POST` | `/api/kerberos/acquire-tgt` | Acquire Kerberos TGT |
+| `GET` | `/api/ccache/list` | List ccache files |
+
+### Scans
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/scans/nmap` | Launch Nmap scan |
+| `POST` | `/api/scans/masscan` | Launch Masscan scan |
+| `GET` | `/api/scans` | List all scan records |
+| `GET` | `/api/scan-status/{scan_id}` | Poll scan status |
+| `POST` | `/api/scans/kill` | Kill a running scan |
+| `POST` | `/api/scans/bulk-delete` | Delete scan records |
+| `POST` | `/api/hosts/import-xml` | Import Nmap XML |
+
+### Nuclei / SMB Signing
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/network/nuclei/scan` | Nuclei scan from DB XML |
+| `POST` | `/api/network/nuclei/scan-direct` | Nuclei scan on explicit targets |
+| `POST` | `/api/network/nuclei/stop/{scan_id}` | Stop Nuclei scan |
+| `GET` | `/api/network/nuclei/xml-files` | List available Nmap XML files |
+| `POST` | `/api/smb-signing/scan` | SMB signing check |
+| `POST` | `/api/smbsigning/run` | SMB signing with target array |
+
+### Credentials
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/credentials` | List all credentials |
+| `POST` | `/api/credentials/add` | Add credential manually |
+| `DELETE` | `/api/credentials/{cred_id}` | Delete credential by ID |
+| `POST` | `/api/credentials/bulk-delete` | Bulk delete credentials |
+| `POST` | `/api/credentials/import/netexec` | Import from netexec workspaces |
+| `POST` | `/api/credentials/import-lsa-secrets` | Import LSA secrets dump |
+| `POST` | `/api/credentials/import/file` | Import from uploaded file |
+| `GET` | `/api/credentials/responder` | Get Responder-captured creds |
+| `GET` | `/api/credentials/kerberoast` | Get Kerberoast hashes |
+| `GET` | `/api/credentials/asreproast` | Get AS-REP hashes |
+
+### AD Attacks
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/bloodhound/run` | BloodHound collection |
+| `POST` | `/api/kerberoast/run` | Kerberoasting |
+| `POST` | `/api/asreproast/run` | AS-REP roasting |
+| `POST` | `/api/adcs/run` | ADCS enumeration |
+| `GET` | `/api/adcs/vulns` | Get ADCS vulnerabilities |
+| `POST` | `/api/adcs/esc1/run` | ESC1 attack chain |
+| `GET` | `/api/adcs/esc1/status` | ESC1 attack status |
+| `POST` | `/api/domain-info/run` | Domain info collection |
+| `POST` | `/api/domain-info/delegation/run` | Kerberos delegation enum |
+| `GET` | `/api/domain-info/delegation/data` | Get delegation data |
+| `GET` | `/api/domain-info` | Get stored domain info |
+| `GET` | `/api/password-policy` | Get password policy |
+| `POST` | `/api/users/rid-brute` | RID cycling enum |
+| `POST` | `/api/users/export` | Domain user export |
+| `POST` | `/api/zerologon/run` | Zerologon check |
+| `POST` | `/api/coerce/run` | Coerce authentication |
+
+### Layer 2
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/responder/start` | Start Responder |
+| `POST` | `/api/responder/stop` | Stop Responder |
+| `GET` | `/api/responder/output` | Stream Responder output |
+| `GET` | `/api/responder/status` | Responder process status |
+| `GET` | `/api/responder/config` | Read Responder.conf |
+| `POST` | `/api/responder/config` | Write Responder.conf |
+| `POST` | `/api/mitm6/start` | Start mitm6 |
+| `POST` | `/api/mitm6/stop` | Stop mitm6 |
+| `GET` | `/api/mitm6/output` | Stream mitm6 output |
+| `GET` | `/api/mitm6/status` | mitm6 process status |
+| `POST` | `/api/asrepcatcher/start` | Start ASRepCatcher |
+| `POST` | `/api/asrepcatcher/stop` | Stop ASRepCatcher |
+| `GET` | `/api/asrepcatcher/output` | Stream ASRepCatcher output |
+| `GET` | `/api/asrepcatcher/status` | ASRepCatcher process status |

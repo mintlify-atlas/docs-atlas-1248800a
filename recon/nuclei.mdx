@@ -1,0 +1,131 @@
+---
+title: Nuclei
+description: Template-based vulnerability scanning against discovered web services with tag filtering.
+---
+
+Nuclei runs Project Discovery's template library against your web-accessible hosts, checking for known CVEs, misconfigurations, exposed panels, and default credentials. EtherReaper feeds Nuclei a target list derived from your nmap XML output and streams results to a JSON output file.
+
+<Note>
+Nuclei runs as your regular user — no sudo required.
+</Note>
+
+## Navigate to the scanner
+
+Open **NETWORK → Nuclei** in the sidebar.
+
+## How target selection works
+
+The standard scan endpoint (`POST /api/network/nuclei/scan`) builds its target list from the most recent nmap XML file in `recon/` whose filename contains `web`. It extracts all hosts with open ports that match known web port numbers:
+
+```
+80 (http), 8080, 8081 (http)
+443 (https), 8443, 8444, 9443, 10443, 8082, 9090, 6443 (https)
+27017, 6379, 10000, 50660, 2325, 1194, 4743, 9582 (https)
+```
+
+The resulting URL list is written to `recon/WebApps.txt` and passed to nuclei via `-l`.
+
+If you want to supply targets directly without relying on a saved nmap scan, use the direct endpoint instead:
+
+```http
+POST /api/network/nuclei/scan-direct
+Content-Type: application/json
+
+{
+  "targets": ["http://10.10.10.5:8080", "https://10.10.10.10:443"],
+  "templates": ["cve", "default-logins"],
+  "custom_cmd": "-severity high,critical"
+}
+```
+
+## Tag filtering
+
+Nuclei templates are organized by tags. Pass a list of tags to limit the scan to relevant template categories:
+
+```http
+POST /api/network/nuclei/scan
+Content-Type: application/json
+
+{
+  "templates": ["cve", "misconfig", "default-logins"],
+  "custom_cmd": ""
+}
+```
+
+The `templates` array values are joined with commas and passed as `-tags <value>`. Leave the array empty to run all templates.
+
+## Custom flags
+
+The `custom_cmd` field appends arbitrary nuclei flags after the tag filter. Use this to restrict severity, set rate limits, or pass any other nuclei CLI options:
+
+```json
+{
+  "custom_cmd": "-severity high,critical -rate-limit 50"
+}
+```
+
+## Running a scan
+
+<Steps>
+  <Step title="Ensure a web nmap scan exists">
+    Run an nmap scan with the **Web** port preset first. Nuclei's standard endpoint looks for `*web*.xml` in `recon/` to build the target list.
+  </Step>
+  <Step title="Select tags (optional)">
+    Choose one or more template tag categories from the UI, or leave blank to run the full template library.
+  </Step>
+  <Step title="Add custom flags (optional)">
+    Enter any additional nuclei CLI flags in the custom command field.
+  </Step>
+  <Step title="Start scan">
+    Click **Start Scan**. Nuclei runs in the background with a 1-hour timeout.
+  </Step>
+  <Step title="Review output">
+    Results appear in **DATA → Scan History**. The output file link opens the JSON results file.
+  </Step>
+</Steps>
+
+## Output file
+
+```
+recon/nuclei_<scan_id>.json
+```
+
+Output is in nuclei's JSON lines format (`-j` flag). Each line is a separate finding with template ID, severity, matched host, and extracted data.
+
+## Stopping a scan
+
+To stop a running nuclei scan:
+
+```http
+POST /api/network/nuclei/stop/{scan_id}
+```
+
+This updates the scan record status to `stopped` in the database. The underlying process has a 1-hour hard timeout enforced server-side.
+
+## Listing available nmap XML files
+
+To see which nmap web XML files are available for the standard scan endpoint to use:
+
+```http
+GET /api/network/nuclei/xml-files
+```
+
+Response:
+
+```json
+{
+  "files": [
+    {
+      "path": "/path/to/recon/nmap_web_20250101_120000.xml",
+      "name": "nmap_web_20250101_120000.xml",
+      "latest": true
+    }
+  ]
+}
+```
+
+The file marked `"latest": true` is the one the scan endpoint will use.
+
+<Warning>
+If no `*web*.xml` file exists in `recon/`, the scan endpoint returns a 400 error. Run an nmap scan with the Web port preset to generate one.
+</Warning>

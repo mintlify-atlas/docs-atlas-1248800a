@@ -1,0 +1,225 @@
+---
+title: 'ASRepCatcher'
+description: 'Passive AS-REP capture and relay for Kerberos credential harvesting. Supports relay mode and listen mode.'
+---
+
+ASRepCatcher captures Kerberos AS-REP responses from the network using raw sockets (via Scapy). It operates in two modes: **relay mode**, which relays AS-REQ packets to a KDC and captures the resulting AS-REP hashes, and **listen mode**, which passively sniffs pre-existing AS-REP traffic on the wire. Captured hashes are stored in the credentials database for offline cracking.
+
+<Warning>
+  ASRepCatcher requires elevated privileges for raw socket and Scapy access. You will be prompted for your sudo password when starting the tool.
+</Warning>
+
+## Accessing ASRepCatcher
+
+Navigate to **LAYER2 → ASRepCatcher** in the sidebar. The panel provides mode selection, interface selection, start/stop controls, and a live output terminal.
+
+---
+
+## Installation
+
+ASRepCatcher is installed by `setup.sh` in its own isolated virtual environment:
+
+```
+ASRepCatcher/
+└── ASRepCatcher-venv/
+    └── bin/
+        └── ASRepCatcher
+```
+
+The binary path used at runtime is:
+
+```
+<app-dir>/ASRepCatcher/ASRepCatcher-venv/bin/ASRepCatcher
+```
+
+If the binary is not present, starting ASRepCatcher returns a `400` error with the message `ASRepCatcher not found at <path>. Run setup.sh first.`
+
+**The venv includes these packages (installed by setup.sh):**
+- `scapy` — raw packet capture and injection
+- `asn1` — ASN.1 parsing for Kerberos structures
+- `setuptools`
+- `termcolor` — colored terminal output
+- `netifaces` — network interface enumeration
+
+<Note>
+  ASRepCatcher is cloned from [https://github.com/Yaxxine7/ASRepCatcher](https://github.com/Yaxxine7/ASRepCatcher) during `setup.sh`. The venv is separate from the main application venv to avoid dependency conflicts.
+</Note>
+
+---
+
+## Modes
+
+<CardGroup cols={2}>
+  <Card title="relay" icon="arrow-right-left">
+    ASRepCatcher intercepts AS-REQ packets, relays them to the real KDC, and captures the AS-REP hashes returned. Active mode — does not require pre-existing Kerberos traffic.
+  </Card>
+  <Card title="listen" icon="ear">
+    ASRepCatcher passively sniffs AS-REP packets already on the wire. Requires that AS-REQ/AS-REP exchanges are visible on the monitored interface (e.g. on a hub or SPAN port).
+  </Card>
+</CardGroup>
+
+The mode is passed as the final positional argument to the ASRepCatcher binary:
+
+```bash
+# relay mode
+sudo <app-dir>/ASRepCatcher/ASRepCatcher-venv/bin/ASRepCatcher relay
+
+# listen mode
+sudo <app-dir>/ASRepCatcher/ASRepCatcher-venv/bin/ASRepCatcher listen
+```
+
+---
+
+## Starting ASRepCatcher
+
+<Steps>
+  <Step title="Select a mode">
+    Choose **relay** or **listen** from the mode selector in the UI.
+  </Step>
+  <Step title="Select a network interface">
+    Choose the interface to capture on. Optional — if not provided, ASRepCatcher uses its default interface selection. The interface is recorded in the session metadata.
+  </Step>
+  <Step title="Enter your sudo password">
+    Raw socket access requires root. Enter your sudo password when prompted.
+  </Step>
+  <Step title="Click Start">
+    The UI calls `POST /api/asrepcatcher/start`, which builds the command, launches the process in the background, logs the session to scan history, and registers the PID in the `ASREPCATCHER_PROCESSES` global dict.
+  </Step>
+  <Step title="Monitor live output">
+    The terminal panel streams output by polling `GET /api/asrepcatcher/output` with a byte offset.
+  </Step>
+</Steps>
+
+### Start request
+
+```http
+POST /api/asrepcatcher/start
+Content-Type: application/json
+
+{
+  "interface": "eth0",
+  "mode": "relay",
+  "options": [],
+  "sudo_password": "<sudo password>"
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "process_id": 24680,
+  "output_file": "asrepcatcher_20240315_160000.txt",
+  "command": "sudo /opt/etherreaper/ASRepCatcher/ASRepCatcher-venv/bin/ASRepCatcher relay"
+}
+```
+
+`mode` defaults to `"relay"` if not specified. The `options` array accepts additional ASRepCatcher flags as individual strings.
+
+---
+
+## Stopping ASRepCatcher
+
+Click **Stop** in the UI, or call the stop endpoint. The backend runs `sudo pkill -f 'ASRepCatcher'` to terminate all ASRepCatcher processes and marks the scan as completed in scan history.
+
+```http
+POST /api/asrepcatcher/stop
+Content-Type: application/json
+
+{
+  "process_id": 24680,
+  "sudo_password": "<sudo password>"
+}
+```
+
+---
+
+## Live output streaming
+
+Output is written to `recon/asrepcatcher_<timestamp>.txt` and read incrementally:
+
+```http
+GET /api/asrepcatcher/output?file=asrepcatcher_20240315_160000.txt&offset=0
+```
+
+**Response fields:**
+
+| Field | Description |
+|---|---|
+| `content` | New bytes read since `offset` |
+| `file_size` | Current file size in bytes |
+
+---
+
+## Checking process status
+
+```http
+GET /api/asrepcatcher/status
+```
+
+**Response:**
+
+```json
+{
+  "running": true,
+  "processes": [
+    {
+      "process_id": 24680,
+      "interface": "eth0",
+      "mode": "relay",
+      "output_file": "asrepcatcher_20240315_160000.txt",
+      "started_at": "2024-03-15T16:00:00.000000"
+    }
+  ]
+}
+```
+
+The `ASREPCATCHER_PROCESSES` dict (keyed by PID) is the authoritative in-memory state. Each entry stores the process handle, output file path, interface, mode, start time, and scan ID.
+
+---
+
+## Output file
+
+Each session writes to a timestamped file in the `recon/` directory:
+
+```
+recon/asrepcatcher_20240315_160000.txt
+```
+
+The file is also linked from **DATA → Scan History** for the corresponding session entry.
+
+---
+
+## Credentials database
+
+Captured AS-REP hashes are stored in the credentials database. A background `monitor_asrepcatcher_output` task watches the output file for new content. Captured hashes appear in **DATA → Credentials** and are available in authenticated scan dropdowns for use in subsequent attacks.
+
+---
+
+## Use with Kerberoast workflow
+
+AS-REP hashes captured by ASRepCatcher are Kerberos pre-authentication responses that can be cracked offline. The typical workflow:
+
+<Steps>
+  <Step title="Capture AS-REP hashes">
+    Run ASRepCatcher in relay or listen mode during a period when Kerberos authentication is active on the network (e.g. user logons, machine reboots).
+  </Step>
+  <Step title="Review captured hashes">
+    Check **DATA → Credentials** and filter by source. Hashes appear in Hashcat format suitable for cracking with `-m 18200` (Kerberos 5, etype 23 AS-REP).
+  </Step>
+  <Step title="Crack the hashes offline">
+    Use Hashcat or John with the captured hash:
+
+    ```bash
+    hashcat -m 18200 hashes.txt wordlist.txt
+    ```
+  </Step>
+  <Step title="Use recovered credentials">
+    Add cracked plaintext credentials to **DATA → Credentials** using the manual entry form. They will then appear in authenticated scan dropdowns for BloodHound, Kerberoast, ADCS, and other modules.
+  </Step>
+</Steps>
+
+<Tip>
+  If you already have credentials and want to enumerate accounts with pre-authentication disabled, use **AD UNAUTH → AsRepRoast** or **AD AUTH → AsRepRoast** instead. ASRepCatcher is for capturing hashes from live network traffic without prior knowledge of target accounts.
+</Tip>
