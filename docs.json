@@ -47,6 +47,7 @@
               "recon/masscan",
               "recon/nuclei",
               "recon/web-screenshots",
+              "recon/rdp-screenshots",
               "recon/smb-signing"
             ]
           },
@@ -75,7 +76,8 @@
               "ad/unauthenticated",
               "ad/authenticated",
               "ad/adcs",
-              "ad/bloodhound"
+              "ad/bloodhound",
+              "ad/secretsdump"
             ]
           },
           {
@@ -86,6 +88,13 @@
               "data/scope",
               "data/scan-history",
               "data/domain-info"
+            ]
+          },
+          {
+            "group": "Tools",
+            "pages": [
+              "tools/shell-terminal",
+              "tools/file-server"
             ]
           },
           {

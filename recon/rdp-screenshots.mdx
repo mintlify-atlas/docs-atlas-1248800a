@@ -1,0 +1,140 @@
+---
+title: RDP screenshots
+description: Automatically screenshot Remote Desktop services across your scope using netexec RDP NLA screenshots with OCR text extraction.
+---
+
+The RDP Screenshots tool captures visual screenshots of Remote Desktop services (port 3389) across your scope using netexec's `--nla-screenshot` flag. Each screenshot is then processed with OCR (pytesseract/Tesseract) to extract visible text — useful for identifying login banners, computer names, domain membership, and running applications.
+
+Navigate to **NETWORK → RDP Screenshots** in the sidebar.
+
+## How it works
+
+<Steps>
+  <Step title="Scan targets">
+    netexec runs `nxc rdp <targets> --nla-screenshot` against all provided targets. Each host that responds on RDP is screenshotted before authentication — capturing the NLA (Network Level Authentication) pre-login screen.
+  </Step>
+  <Step title="OCR text extraction">
+    Each PNG screenshot is processed with pytesseract (Tesseract OCR engine) to extract readable text. The extracted text is stored alongside the screenshot in the results JSON.
+  </Step>
+  <Step title="Copy PNGs to gallery">
+    Resulting PNGs are copied from netexec's output directory into `recon/screenshots/` so they can be served via the API and viewed in the gallery.
+  </Step>
+</Steps>
+
+## Requirements
+
+RDP Screenshots requires two additional Python packages installed by `setup.sh`:
+
+| Package | Purpose |
+|---|---|
+| `pillow` | Image processing library (PIL) required by pytesseract |
+| `pytesseract` | Python wrapper for Tesseract OCR |
+
+The system package `tesseract-ocr` and `tesseract-ocr-eng` are installed by `setup.sh` via apt.
+
+## API endpoints
+
+### POST /api/rdpscreenshot/run
+
+Launches an RDP screenshot scan against a list of targets. Any currently running RDP scan is automatically cancelled before the new scan starts.
+
+```bash
+curl -X POST http://localhost:8000/api/rdpscreenshot/run \
+  -H "Content-Type: application/json" \
+  -d '{"targets": ["10.10.10.1", "10.10.10.2", "192.168.1.0/24"]}'
+```
+
+**Request body**
+
+| Field | Type | Description |
+|---|---|---|
+| `targets` | array of strings | IP addresses, hostnames, or CIDR ranges to scan |
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "scan_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
+### GET /api/rdpscreenshot/status
+
+Poll the progress of a running RDP scan.
+
+```bash
+curl "http://localhost:8000/api/rdpscreenshot/status?scan_id=<scan_id>"
+```
+
+**Response**
+
+```json
+{
+  "status": "running",
+  "phase": "scanning",
+  "total": 10,
+  "completed": 4,
+  "results": [],
+  "error": null,
+  "scan_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
+`status` is one of `running`, `completed`, `cancelled`, or `error`.
+
+### GET /api/rdpscreenshot/latest
+
+Retrieve the results from the most recently completed RDP screenshot scan.
+
+```bash
+curl http://localhost:8000/api/rdpscreenshot/latest
+```
+
+**Response**
+
+```json
+{
+  "status": "ok",
+  "results": [
+    {
+      "host": "10.10.10.1",
+      "screenshot": "rdp_10.10.10.1.png",
+      "ocr_text": "Windows Server 2019\nDC01\nCORP\\Administrator"
+    }
+  ]
+}
+```
+
+Returns `{"status": "none"}` if no completed scan exists.
+
+## Output files
+
+| File | Contents |
+|---|---|
+| `recon/rdpscreenshot_<scan_id>.json` | Full results with OCR text for all targets |
+| `recon/rdpscreenshot_<scan_id>.txt` | Raw netexec output log |
+| `recon/screenshots/rdp_<ip>.png` | Individual RDP pre-login screenshots |
+
+Previous scan results (JSON + PNG files) are automatically cleaned up when a new scan starts.
+
+## Workflow
+
+<Steps>
+  <Step title="Identify RDP hosts">
+    Run an Nmap scan with the **infra** port preset, which includes port 3389. Alternatively, run Masscan against port 3389. Discovered hosts appear in **DATA → Hosts**.
+  </Step>
+  <Step title="Run RDP Screenshots">
+    Open **NETWORK → RDP Screenshots**. Enter target IPs or pull from your scope. Click **Start Scan**.
+  </Step>
+  <Step title="Review the gallery">
+    Once the scan completes, screenshots appear in a gallery. The OCR text overlay shows extracted text from each pre-login screen.
+  </Step>
+  <Step title="Identify targets">
+    Look for: computer names, domain membership displayed in the login banner, software versions visible on the desktop, and any other information that helps prioritize targets.
+  </Step>
+</Steps>
+
+<Note>
+  RDP Screenshots capture the pre-authentication NLA screen. No credentials are required or submitted. The tool is read-only and does not attempt to authenticate to RDP.
+</Note>

